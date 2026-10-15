@@ -1,0 +1,23 @@
+{
+  "name": "crisp-ripple",
+  "version": "0.1.0",
+  "description": "Ambient ASCII field with click ripples on Obsidian's empty new-tab page.",
+  "main": "main.js",
+  "type": "module",
+  "scripts": {
+    "dev": "node esbuild.config.mjs",
+    "build": "tsc --noEmit --skipLibCheck && node esbuild.config.mjs production",
+    "deploy": "node scripts/deploy.mjs",
+    "test": "node --test tests/*.test.mjs",
+    "check": "npm run build && npm test"
+  },
+  "author": "letschips",
+  "license": "SEE LICENSE IN LICENSE",
+  "devDependencies": {
+    "@types/node": "^26.6.5",
+    "builtin-modules": "^5.4.0",
+    "esbuild": "^0.28.2",
+    "obsidian": "^1.14.4",
+    "typescript": "^7.0.2"
+  }
+}

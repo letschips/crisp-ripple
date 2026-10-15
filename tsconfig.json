@@ -1,0 +1,13 @@
+{
+  "compilerOptions": {
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "noEmit": true,
+    "strict": true,
+    "target": "ES2018",
+    "lib": ["ES2018", "DOM"],
+    "types": ["node"],
+    "useDefineForClassFields": true
+  },
+  "include": ["src/**/*.ts"]
+}

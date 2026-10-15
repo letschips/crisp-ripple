@@ -1,0 +1,10 @@
+{
+  "id": "crisp-ripple",
+  "name": "Crisp Ripple",
+  "version": "0.1.0",
+  "minAppVersion": "1.6.0",
+  "description": "Adds a drifting character field to the empty new tab, with ripples and a water-drop sound on click.",
+  "author": "letschips",
+  "authorUrl": "https://github.com/letschips",
+  "isDesktopOnly": true
+}

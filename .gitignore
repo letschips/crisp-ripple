@@ -1,0 +1,8 @@
+node_modules/
+.DS_Store
+*.log
+
+# Sensitive runtime & user data (NEVER commit to git or releases)
+data.json
+data.json.bak*
+data.json.unreadable-*
