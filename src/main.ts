@@ -1,7 +1,8 @@
 import { App, ItemView, Notice, Plugin, PluginSettingTab, Setting, View } from "obsidian";
-import { preserveUnreadableData } from "./data-safety";
+import { preserveUnreadableData, verifyDataWrite } from "./data-safety";
 import { AsciiField, FieldColors, FieldTuning, Rgb } from "./field";
-import { LicensePayload, discoverVaultCrispLicense, verifyLicenseCode } from "./license";
+import { discoverVaultCrispLicense, verifyLicenseCode } from "./license";
+import { ActivationOutcome, LicenseController, LicenseResult } from "./license-controller";
 import {
   ColorMode,
   DEFAULT_VISUALS,
@@ -18,12 +19,6 @@ const PLUGIN_ID = "crisp-ripple";
 const HOST_CLASS = "crisp-ripple-host";
 const CANVAS_CLASS = "crisp-ripple-canvas";
 const AUTHOR_URL = "https://xhslink.cn/m/3MwtKu4822b";
-
-interface LicenseState {
-  valid: boolean;
-  payload?: LicensePayload;
-  reason?: string;
-}
 
 function parseColor(value: string, fallback: Rgb): Rgb {
   const probe = document.createElement("canvas").getContext("2d");
@@ -65,10 +60,10 @@ class EmptyTabRipple {
   private readonly field: AsciiField;
   private readonly observer: ResizeObserver;
   private readonly host: HTMLElement;
+  private readonly motionQuery: MediaQueryList;
 
   constructor(
     view: View,
-    reducedMotion: boolean,
     private readonly visuals: () => VisualSettings,
     private readonly onDrop: (pan: number) => void,
   ) {
@@ -79,8 +74,11 @@ class EmptyTabRipple {
     this.canvas = host.createEl("canvas", { cls: CANVAS_CLASS });
     this.canvas.setAttr("aria-hidden", "true");
     host.prepend(this.canvas);
+    // Each window delivers media-query changes only while it renders, so listen on the canvas's own window.
+    this.motionQuery = (host.ownerDocument.defaultView ?? window).matchMedia("(prefers-reduced-motion: reduce)");
+    this.motionQuery.addEventListener("change", this.onMotionChange);
     const { colors, font } = readTheme(visuals());
-    this.field = new AsciiField(this.canvas, colors, font, reducedMotion);
+    this.field = new AsciiField(this.canvas, colors, font, this.motionQuery.matches);
     this.field.setTuning(tuningOf(visuals()));
     this.observer = new ResizeObserver(() => this.syncSize());
     this.observer.observe(host);
@@ -100,6 +98,7 @@ class EmptyTabRipple {
 
   destroy(): void {
     this.field.stop();
+    this.motionQuery.removeEventListener("change", this.onMotionChange);
     this.observer.disconnect();
     this.host.removeEventListener("pointerdown", this.onPointerDown);
     this.host.removeClass(HOST_CLASS);
@@ -116,6 +115,11 @@ class EmptyTabRipple {
     this.field.start();
   }
 
+  private onMotionChange = (event: MediaQueryListEvent): void => {
+    this.field.setReducedMotion(event.matches);
+    if (!event.matches) this.syncSize();
+  };
+
   private onPointerDown = (event: PointerEvent): void => {
     if (event.button !== 0) return;
     const rect = this.canvas.getBoundingClientRect();
@@ -128,16 +132,40 @@ class EmptyTabRipple {
 
 export default class CrispRipplePlugin extends Plugin {
   private ripples = new Map<View, EmptyTabRipple>();
-  private reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   private rippleSettings: RippleSettings = normalizeSettings(undefined);
   private readonly sound = new DropSound();
   private dataWriteBlocked = false;
+  private unloaded = false;
+  private saveQueue: Promise<unknown> = Promise.resolve();
+  private saveErrorShown = false;
   private settingTab: RippleSettingTab | null = null;
-  license: LicenseState = { valid: false };
+  private readonly licenseController = new LicenseController({
+    verify: (code, online) => this.checkLicense(code, online),
+    discover: () => discoverVaultCrispLicense(this.app, PLUGIN_ID),
+    getCode: () => this.rippleSettings.licenseCode,
+    persistCode: async (code) => {
+      this.rippleSettings.licenseCode = code;
+      return this.saveSettings();
+    },
+    onChange: () => {
+      this.applyVisuals();
+      this.settingTab?.display();
+    },
+  });
 
-  // Never overwrite a data.json that could not be read and could not be backed up either.
+  /** Licence state as last verified; `licensed` also applies the expiry date at the moment of use. */
+  get license(): LicenseResult {
+    return this.licenseController.state;
+  }
+
+  get licensed(): boolean {
+    return this.licenseController.licensed;
+  }
+
+  // Never overwrite a data.json that could not be read and could not be backed up either,
+  // and never write from an instance that has already been unloaded.
   async saveData(data: unknown): Promise<void> {
-    if (this.dataWriteBlocked) return;
+    if (this.dataWriteBlocked || this.unloaded) return;
     await super.saveData(data);
   }
 
@@ -146,9 +174,10 @@ export default class CrispRipplePlugin extends Plugin {
     await this.protectUnreadableData(raw);
     this.rippleSettings = normalizeSettings(raw ?? {});
     // Startup stays local: only the embedded-key signature check, the online check runs later.
-    if (this.rippleSettings.licenseCode) {
-      this.license = await this.checkLicense(this.rippleSettings.licenseCode, false);
-    }
+    await this.licenseController.loadLocal();
+
+    // Paid features follow expiresAt even when Obsidian stays open past it.
+    this.registerInterval(window.setInterval(() => this.licenseController.checkExpiry(), 60_000));
 
     this.settingTab = new RippleSettingTab(this.app, this);
     this.addSettingTab(this.settingTab);
@@ -156,7 +185,7 @@ export default class CrispRipplePlugin extends Plugin {
       id: "toggle-sound",
       name: "Toggle water-drop sound",
       callback: async () => {
-        if (!this.license.valid) {
+        if (!this.licensed) {
           new Notice("Crisp Ripple：水滴音效需要激活后使用");
           return;
         }
@@ -168,7 +197,9 @@ export default class CrispRipplePlugin extends Plugin {
     });
     this.app.workspace.onLayoutReady(() => {
       this.sync();
-      void this.refreshLicenseInBackground();
+      void this.licenseController.refreshInBackground().catch((error) => {
+        console.debug("Crisp Ripple background license check failed", error);
+      });
     });
     this.registerEvent(this.app.workspace.on("layout-change", () => this.sync()));
     this.registerEvent(this.app.workspace.on("active-leaf-change", () => this.sync()));
@@ -176,6 +207,8 @@ export default class CrispRipplePlugin extends Plugin {
   }
 
   onunload(): void {
+    this.unloaded = true;
+    this.licenseController.dispose();
     for (const ripple of this.ripples.values()) ripple.destroy();
     this.ripples.clear();
     this.sound.dispose();
@@ -185,8 +218,30 @@ export default class CrispRipplePlugin extends Plugin {
     return this.rippleSettings;
   }
 
-  async saveSettings(): Promise<void> {
-    await this.saveData(this.rippleSettings);
+  /**
+   * Saves in order and reads data.json back, because Obsidian's saveData() swallows write errors.
+   * Resolves false (after one notice) when the write could not be confirmed.
+   */
+  saveSettings(): Promise<boolean> {
+    const snapshot = JSON.parse(JSON.stringify(this.rippleSettings)) as RippleSettings;
+    const operation = this.saveQueue.then(async () => {
+      if (this.unloaded || this.dataWriteBlocked) return false;
+      await this.saveData(snapshot);
+      try {
+        await verifyDataWrite(this.app.vault.adapter, `${this.manifest.dir}/data.json`, snapshot);
+        this.saveErrorShown = false;
+        return true;
+      } catch (error) {
+        console.debug("Crisp Ripple settings save failed", error);
+        if (!this.saveErrorShown) {
+          this.saveErrorShown = true;
+          new Notice("Crisp Ripple：设置没有写入磁盘，重启后会丢失。下次修改时会再试。");
+        }
+        return false;
+      }
+    });
+    this.saveQueue = operation.catch(() => false);
+    return operation;
   }
 
   /** Re-applies colour and tuning to every open empty tab. */
@@ -201,58 +256,21 @@ export default class CrispRipplePlugin extends Plugin {
   }
 
   previewDrop(): void {
-    if (!soundEnabled(this.rippleSettings, this.license.valid)) return;
+    if (!soundEnabled(this.rippleSettings, this.licensed)) return;
     this.sound.play({ pan: 0, seed: Math.random(), volume: this.rippleSettings.volume / 100 });
   }
 
-  async activate(code: string): Promise<LicenseState> {
-    const result = await this.checkLicense(code, true);
-    if (result.valid) {
-      this.rippleSettings.licenseCode = code.trim();
-      await this.saveSettings();
-      this.license = result;
-      this.applyVisuals();
-    }
-    return result;
+  activate(code: string): Promise<ActivationOutcome> {
+    return this.licenseController.activate(code);
   }
 
-  async clearLicense(): Promise<void> {
-    this.rippleSettings.licenseCode = "";
-    await this.saveSettings();
-    this.license = { valid: false };
-    this.applyVisuals();
+  clearLicense(): Promise<boolean> {
+    return this.licenseController.clear();
   }
 
-  private async checkLicense(code: string, online: boolean): Promise<LicenseState> {
+  private async checkLicense(code: string, online: boolean): Promise<LicenseResult> {
     const result = await verifyLicenseCode(code, PLUGIN_ID, online ? undefined : { online: false });
     return { valid: result.valid, payload: result.payload, reason: result.reason };
-  }
-
-  /** Online revocation/device check for a stored code, or inheriting a code from sibling Crisp plugins. */
-  private async refreshLicenseInBackground(): Promise<void> {
-    try {
-      const code = this.rippleSettings.licenseCode;
-      if (code) {
-        const result = await this.checkLicense(code, true);
-        if (result.valid !== this.license.valid || result.reason !== this.license.reason) {
-          this.license = result;
-          this.applyVisuals();
-          this.settingTab?.display();
-        }
-        return;
-      }
-      const inherited = await discoverVaultCrispLicense(this.app, PLUGIN_ID);
-      if (!inherited) return;
-      const result = await this.checkLicense(inherited, false);
-      if (!result.valid) return;
-      this.rippleSettings.licenseCode = inherited;
-      await this.saveSettings();
-      this.license = result;
-      this.applyVisuals();
-      this.settingTab?.display();
-    } catch (error) {
-      console.debug("Crisp Ripple background license check failed", error);
-    }
   }
 
   // loadData() yields undefined when data.json exists but cannot be read; keep a copy before defaults take over.
@@ -268,10 +286,10 @@ export default class CrispRipplePlugin extends Plugin {
     }
   }
 
-  private visuals = (): VisualSettings => effectiveVisuals(this.rippleSettings, this.license.valid);
+  private visuals = (): VisualSettings => effectiveVisuals(this.rippleSettings, this.licensed);
 
   private playDrop = (pan: number): void => {
-    if (!soundEnabled(this.rippleSettings, this.license.valid)) return;
+    if (!soundEnabled(this.rippleSettings, this.licensed)) return;
     this.sound.play({ pan, seed: Math.random(), volume: this.rippleSettings.volume / 100 });
   };
 
@@ -286,7 +304,7 @@ export default class CrispRipplePlugin extends Plugin {
     }
     for (const view of views) {
       if (!this.ripples.has(view)) {
-        this.ripples.set(view, new EmptyTabRipple(view, this.reducedMotion, this.visuals, this.playDrop));
+        this.ripples.set(view, new EmptyTabRipple(view, this.visuals, this.playDrop));
       }
     }
   }
@@ -304,7 +322,7 @@ class RippleSettingTab extends PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
     const settings = this.plugin.options;
-    const licensed = this.plugin.license.valid;
+    const licensed = this.plugin.licensed;
 
     this.renderLicense(containerEl);
 
@@ -405,7 +423,7 @@ class RippleSettingTab extends PluginSettingTab {
     new Setting(containerEl).setName("软件授权与激活").setHeading();
     const license = this.plugin.license;
     const status = new Setting(containerEl).setName("激活状态");
-    if (license.valid) {
+    if (this.plugin.licensed) {
       const payload = license.payload;
       const user = payload?.userName || "Crisp 用户";
       const expiry = payload?.expiresAt ? `到期时间：${String(payload.expiresAt).split("T")[0]}` : "永久授权";
@@ -429,7 +447,7 @@ class RippleSettingTab extends PluginSettingTab {
       );
     }
 
-    if (license.valid) return;
+    if (this.plugin.licensed) return;
     new Setting(containerEl)
       .setName("授权码")
       .setDesc("支持 Crisp Suite 全家桶或单款授权码。启动时会自动继承库内其他 Crisp 插件的授权。")
@@ -456,13 +474,19 @@ class RippleSettingTab extends PluginSettingTab {
             this.checking = true;
             this.display();
             try {
-              const result = await this.plugin.activate(code);
-              if (result.valid) {
-                this.licenseDraft = "";
-                new Notice(`Crisp Ripple 激活成功，欢迎使用，${result.payload?.userName || "Crisp 用户"}`);
-              } else {
+              const { result, applied, saved } = await this.plugin.activate(code);
+              if (!applied) return;
+              if (!result.valid) {
                 new Notice(`激活未通过：${result.reason || "未知原因"}`);
+                return;
               }
+              this.licenseDraft = "";
+              new Notice(
+                saved
+                  ? `Crisp Ripple 激活成功，欢迎使用，${result.payload?.userName || "Crisp 用户"}`
+                  : "授权验证通过，但没能写入设置文件：本次可以使用，重启后需要重新激活。",
+                saved ? 4000 : 0,
+              );
             } finally {
               this.checking = false;
               this.display();

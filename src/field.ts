@@ -87,6 +87,7 @@ export class AsciiField {
   private glyphs = new Uint8Array(0);
   private ripples: Ripple[] = [];
   private frame = 0;
+  private frameWindow: Window = window;
   private lastDraw = 0;
   private running = false;
   private readonly epoch = performance.now();
@@ -96,11 +97,31 @@ export class AsciiField {
     private readonly canvas: HTMLCanvasElement,
     private colors: FieldColors,
     private font: string,
-    private readonly reducedMotion: boolean,
+    private reducedMotion: boolean,
   ) {
     const ctx = canvas.getContext("2d");
     if (!ctx) throw new Error("Canvas 2D context unavailable");
     this.ctx = ctx;
+  }
+
+  /** Follows the system setting live: stops motion at once, or resumes it. */
+  setReducedMotion(reduced: boolean): void {
+    if (reduced === this.reducedMotion) return;
+    this.reducedMotion = reduced;
+    if (reduced) {
+      this.ripples = [];
+      this.stop();
+      if (this.width > 0) this.draw(performance.now());
+    }
+  }
+
+  /** The canvas may live in a pop-out window on a screen with a different scale. */
+  private hostWindow(): Window {
+    return this.canvas.ownerDocument.defaultView ?? window;
+  }
+
+  private windowDpr(): number {
+    return this.hostWindow().devicePixelRatio || 1;
   }
 
   setTuning(tuning: FieldTuning): void {
@@ -115,7 +136,7 @@ export class AsciiField {
   }
 
   resize(width: number, height: number, force = false): void {
-    const dpr = window.devicePixelRatio || 1;
+    const dpr = this.windowDpr();
     if (!force && width === this.width && height === this.height && dpr === this.dpr) return;
     this.width = width;
     this.height = height;
@@ -146,17 +167,20 @@ export class AsciiField {
   start(): void {
     if (this.running || this.reducedMotion) return;
     this.running = true;
-    this.frame = requestAnimationFrame(this.tick);
+    this.frameWindow = this.hostWindow();
+    this.frame = this.frameWindow.requestAnimationFrame(this.tick);
   }
 
   stop(): void {
     this.running = false;
-    cancelAnimationFrame(this.frame);
+    this.frameWindow.cancelAnimationFrame(this.frame);
   }
 
   private tick = (now: number): void => {
     if (!this.running) return;
-    this.frame = requestAnimationFrame(this.tick);
+    this.frame = this.frameWindow.requestAnimationFrame(this.tick);
+    // Moving a window to a screen with another scale changes DPR without resizing the canvas.
+    if (this.windowDpr() !== this.dpr) this.resize(this.width, this.height);
     const life = RIPPLE_LIFE / this.tuning.speed;
     this.ripples = this.ripples.filter((r) => (now - r.start) / 1000 < life);
     if (this.ripples.length === 0 && now - this.lastDraw < IDLE_FRAME_MS) return;
