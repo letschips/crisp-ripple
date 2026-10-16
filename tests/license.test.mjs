@@ -38,7 +38,7 @@ await esbuild.build({
     },
   }],
 });
-const { verifyLicenseCode } = await import(pathToFileURL(path.join(outDir, "license.mjs")).href);
+const { verifyLicenseCode, discoverVaultCrispLicenses } = await import(pathToFileURL(path.join(outDir, "license.mjs")).href);
 
 const b64url = (buf) => Buffer.from(buf).toString("base64url");
 function makeCode(fields = {}) {
@@ -143,4 +143,29 @@ test("local checks reject before any request", async () => {
   const otherPlugin = makeCode({ features: ["crisp-mind"] });
   assert.equal((await verifyLicenseCode(otherPlugin, "crisp-ripple", env({ request }))).valid, false);
   assert.equal(calls.length, 0);
+});
+
+// 0.1.4 audit: every locally valid sibling code is offered, in scan order, so a revoked first one cannot hide the rest.
+test("inheritance scan returns every locally valid sibling code in order", async () => {
+  const B = makeCode({ licenseId: "TEST-B" });
+  const files = {
+    ".obsidian/plugins/crisp-mind/data.json": JSON.stringify({ licenseCode: CODE }),
+    ".obsidian/plugins/crisp-focus/data.json": JSON.stringify({ licenseKey: B }),
+    ".obsidian/plugins/crisp-pulse/data.json": JSON.stringify({ licenseCode: "garbage.sig" }),
+    ".obsidian/plugins/crisp-tempo/data.json": JSON.stringify({ licenseCode: CODE }),
+    ".obsidian/plugins/crisp-ripple/data.json": JSON.stringify({ licenseCode: makeCode({ licenseId: "SELF" }) }),
+  };
+  const app = {
+    plugins: { plugins: {} },
+    vault: {
+      configDir: ".obsidian",
+      adapter: {
+        exists: async (p) => p === ".obsidian/plugins" || p in files,
+        list: async () => ({ folders: ["crisp-mind", "crisp-focus", "crisp-pulse", "crisp-tempo", "crisp-ripple"].map((f) => `.obsidian/plugins/${f}`), files: [] }),
+        read: async (p) => files[p],
+      },
+    },
+  };
+  const found = await discoverVaultCrispLicenses(app, "crisp-ripple");
+  assert.deepEqual(found, [CODE, B], "duplicates, invalid codes and the plugin's own data are skipped");
 });

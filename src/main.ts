@@ -2,7 +2,7 @@ import { App, ItemView, Notice, Plugin, PluginSettingTab, Setting, View } from "
 import { preserveUnreadableData, verifyDataWrite } from "./data-safety";
 import { parseColor } from "./color";
 import { AsciiField, FieldColors, FieldTuning } from "./field";
-import { discoverVaultCrispLicense, verifyLicenseCode } from "./license";
+import { discoverVaultCrispLicenses, verifyLicenseCode } from "./license";
 import { ActivationOutcome, LicenseController, LicenseResult } from "./license-controller";
 import {
   ColorMode,
@@ -130,7 +130,7 @@ export default class CrispRipplePlugin extends Plugin {
   private settingTab: RippleSettingTab | null = null;
   private readonly licenseController = new LicenseController({
     verify: (code, online) => this.checkLicense(code, online),
-    discover: () => discoverVaultCrispLicense(this.app, PLUGIN_ID),
+    discover: () => discoverVaultCrispLicenses(this.app, PLUGIN_ID),
     getCode: () => this.rippleSettings.licenseCode,
     persistCode: async (code) => {
       this.rippleSettings.licenseCode = code;

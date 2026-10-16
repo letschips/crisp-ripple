@@ -29,7 +29,7 @@ function deferred() {
 const OK = (user = "A", expiresAt = "2999-01-01T00:00:00.000Z") => ({ valid: true, payload: { userName: user, expiresAt } });
 
 /** Fake host: data.json is `stored`, verify answers come from `answers` (code -> online -> result or deferred). */
-function host({ stored = "", answers = {}, discover = async () => null, persistOk = true, now } = {}) {
+function host({ stored = "", answers = {}, discover = async () => [], persistOk = true, now } = {}) {
   const h = {
     stored,
     calls: [],
@@ -58,7 +58,7 @@ function host({ stored = "", answers = {}, discover = async () => null, persistO
 test("an inherited code is checked online before it is saved", async () => {
   const h = host({
     answers: { A: { local: OK(), online: { valid: false, reason: "该授权已被吊销" } } },
-    discover: async () => "A",
+    discover: async () => ["A"],
   });
   await h.controller.refreshInBackground();
   assert.ok(h.calls.some((c) => c.code === "A" && c.online), "inheritance must reach the licence service");
@@ -67,7 +67,7 @@ test("an inherited code is checked online before it is saved", async () => {
 });
 
 test("an inherited code that passes online is saved and unlocks", async () => {
-  const h = host({ answers: { A: { online: OK() } }, discover: async () => "A" });
+  const h = host({ answers: { A: { online: OK() } }, discover: async () => ["A"] });
   await h.controller.refreshInBackground();
   assert.equal(h.controller.licensed, true);
   assert.equal(h.stored, "A");
@@ -94,7 +94,7 @@ test("a manual activation wins over an inheritance scan that finishes later", as
   const background = h.controller.refreshInBackground();
   const outcome = await h.controller.activate("B");
   assert.equal(outcome.applied, true);
-  scan.resolve("A");
+  scan.resolve(["A"]);
   await background;
   assert.equal(h.stored, "B");
   assert.equal(h.controller.state.payload.userName, "B");
@@ -105,7 +105,7 @@ test("nothing is written or changed after unload", async () => {
   const h = host({ answers: { A: { online: OK() } }, discover: () => scan.promise });
   const background = h.controller.refreshInBackground();
   h.controller.dispose();
-  scan.resolve("A");
+  scan.resolve(["A"]);
   await background;
   assert.equal(h.persists, 0);
   assert.equal(h.controller.licensed, false);
@@ -141,4 +141,66 @@ test("an online denial of the stored code locks features", async () => {
   await h.controller.refreshInBackground();
   assert.equal(h.controller.licensed, false);
   assert.equal(h.controller.state.reason, "设备数已达上限");
+});
+
+// 0.1.4 audit: an old or revoked code must not stand in the way of a valid code elsewhere in the vault.
+
+test("a stored code that has expired gives way to a valid sibling code", async () => {
+  const h = host({
+    stored: "OLD",
+    answers: { OLD: { local: OK(), online: { valid: false, reason: "授权已于 2026-01-01 到期" } }, NEW: { online: OK("NEW") } },
+    discover: async () => ["NEW"],
+  });
+  await h.controller.loadLocal();
+  await h.controller.refreshInBackground();
+  assert.equal(h.controller.licensed, true);
+  assert.equal(h.stored, "NEW", "the renewed code replaces the dead one");
+  assert.equal(h.controller.state.payload.userName, "NEW");
+});
+
+test("a stored code that still works is kept and the vault is not scanned", async () => {
+  let scanned = 0;
+  const h = host({
+    stored: "A",
+    answers: { A: { local: OK(), online: OK() } },
+    discover: async () => (scanned++, ["B"]),
+  });
+  await h.controller.refreshInBackground();
+  assert.equal(h.stored, "A");
+  assert.equal(scanned, 0);
+});
+
+test("the stored code is not retried as its own sibling", async () => {
+  const h = host({
+    stored: "OLD",
+    answers: { OLD: { online: { valid: false, reason: "该授权已被吊销" } } },
+    discover: async () => ["OLD"],
+  });
+  await h.controller.refreshInBackground();
+  assert.equal(h.calls.filter((c) => c.code === "OLD" && c.online).length, 1);
+  assert.equal(h.controller.licensed, false);
+  assert.equal(h.controller.state.reason, "该授权已被吊销", "the user still sees why the stored code failed");
+});
+
+test("a sibling code rejected online does not hide a later valid one", async () => {
+  const h = host({
+    answers: { A: { online: { valid: false, reason: "该授权已被吊销" } }, B: { online: OK("B") } },
+    discover: async () => ["A", "B"],
+  });
+  await h.controller.refreshInBackground();
+  assert.equal(h.controller.licensed, true);
+  assert.equal(h.stored, "B");
+});
+
+test("clearing the licence while siblings are being checked one by one stops the scan", async () => {
+  const first = deferred();
+  const h = host({ answers: { A: { online: first }, B: { online: OK("B") } }, discover: async () => ["A", "B"] });
+  const background = h.controller.refreshInBackground();
+  await new Promise((r) => setImmediate(r));
+  await h.controller.clear();
+  first.resolve({ valid: false, reason: "revoked" });
+  await background;
+  assert.equal(h.controller.licensed, false);
+  assert.equal(h.stored, "");
+  assert.ok(!h.calls.some((c) => c.code === "B"), "no further candidates after the user acted");
 });

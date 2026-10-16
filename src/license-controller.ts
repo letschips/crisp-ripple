@@ -16,8 +16,8 @@ export interface LicenseResult {
 export interface LicenseDeps {
   /** online=false: embedded-key signature only. online=true: also asks the licence service. */
   verify(code: string, online: boolean): Promise<LicenseResult>;
-  /** A code already activated by a sibling Crisp plugin, or null. */
-  discover(): Promise<string | null>;
+  /** Codes already activated by sibling Crisp plugins that pass the local check, in scan order. */
+  discover(): Promise<string[]>;
   getCode(): string;
   /** Writes the code to data.json; false when the write could not be confirmed. */
   persistCode(code: string): Promise<boolean>;
@@ -67,7 +67,11 @@ export class LicenseController {
     this.set(result);
   }
 
-  /** After layout: online check of the stored code, or inherit a sibling's code after an online check. */
+  /**
+   * After layout: online check of the stored code. When there is none, or it no longer works
+   * (expired, revoked, device limit), try the codes of sibling Crisp plugins one by one and keep
+   * the first that passes online, so a dead code never hides a renewed one.
+   */
   async refreshInBackground(): Promise<void> {
     const sequence = ++this.sequence;
     const code = this.deps.getCode();
@@ -75,15 +79,19 @@ export class LicenseController {
       const result = await this.deps.verify(code, true);
       if (this.stale(sequence)) return;
       this.set(result);
+      if (result.valid) return;
+    }
+    const candidates = (await this.deps.discover()).filter((candidate) => candidate !== code);
+    for (const candidate of candidates) {
+      if (this.stale(sequence)) return;
+      const result = await this.deps.verify(candidate, true);
+      if (this.stale(sequence)) return;
+      if (!result.valid) continue;
+      await this.deps.persistCode(candidate);
+      if (this.stale(sequence)) return;
+      this.set(result);
       return;
     }
-    const inherited = await this.deps.discover();
-    if (!inherited || this.stale(sequence)) return;
-    const result = await this.deps.verify(inherited, true);
-    if (this.stale(sequence) || !result.valid) return;
-    await this.deps.persistCode(inherited);
-    if (this.stale(sequence)) return;
-    this.set(result);
   }
 
   async activate(code: string): Promise<ActivationOutcome> {

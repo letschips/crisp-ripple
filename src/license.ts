@@ -318,11 +318,12 @@ export async function verifyLicenseCode(
 /**
  * 自动扫描库内其他 Crisp 插件并继承有效授权
  */
-export async function discoverVaultCrispLicense(
+export async function discoverVaultCrispLicenses(
   app: any,
   targetPluginId = "crisp-ripple",
-): Promise<string | null> {
-  if (!app) return null;
+  limit = 5,
+): Promise<string[]> {
+  if (!app) return [];
   const candidates: string[] = [];
   const seen = new Set<string>();
 
@@ -371,18 +372,18 @@ export async function discoverVaultCrispLicense(
       }
     }
   } catch (err) {
-    console.debug("Crisp Ripple discoverVaultCrispLicense adapter scan error:", err);
+    console.debug("Crisp Ripple discoverVaultCrispLicenses adapter scan error:", err);
   }
 
-  // 本地离线校验候选码（避免批量请求 worker）
+  // 本地离线校验候选码（避免批量请求 worker）。返回全部通过的码，调用方逐个在线核对：
+  // 排在前面的码在线被拒（吊销、设备上限）时，后面的有效码仍有机会。
+  const valid: string[] = [];
   for (const code of candidates) {
+    if (valid.length >= limit) break;
     const local = await verifyLicenseCode(code, targetPluginId, {
       online: false,
     });
-    if (local.valid) {
-      return code;
-    }
+    if (local.valid) valid.push(code);
   }
-
-  return null;
+  return valid;
 }
