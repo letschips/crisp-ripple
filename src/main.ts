@@ -1,6 +1,7 @@
 import { App, ItemView, Notice, Plugin, PluginSettingTab, Setting, View } from "obsidian";
 import { preserveUnreadableData, verifyDataWrite } from "./data-safety";
-import { AsciiField, FieldColors, FieldTuning, Rgb } from "./field";
+import { parseColor } from "./color";
+import { AsciiField, FieldColors, FieldTuning } from "./field";
 import { discoverVaultCrispLicense, verifyLicenseCode } from "./license";
 import { ActivationOutcome, LicenseController, LicenseResult } from "./license-controller";
 import {
@@ -19,27 +20,6 @@ const PLUGIN_ID = "crisp-ripple";
 const HOST_CLASS = "crisp-ripple-host";
 const CANVAS_CLASS = "crisp-ripple-canvas";
 const AUTHOR_URL = "https://xhslink.cn/m/3MwtKu4822b";
-
-function parseColor(value: string, fallback: Rgb): Rgb {
-  const probe = document.createElement("canvas").getContext("2d");
-  if (!probe || !value.trim()) return fallback;
-  probe.fillStyle = "#000";
-  probe.fillStyle = value.trim();
-  const normalized = String(probe.fillStyle);
-  const hex = /^#([0-9a-f]{6})$/i.exec(normalized);
-  if (hex) {
-    const n = parseInt(hex[1], 16);
-    return { r: (n >> 16) & 255, g: (n >> 8) & 255, b: n & 255 };
-  }
-  const rgb = /rgba?\(([\d.]+),\s*([\d.]+),\s*([\d.]+)/.exec(normalized);
-  if (rgb) return { r: +rgb[1], g: +rgb[2], b: +rgb[3] };
-  // color(), oklch() and color-mix() keep their own serialisation; paint one pixel to resolve them.
-  probe.canvas.width = probe.canvas.height = 1;
-  probe.fillStyle = normalized;
-  probe.fillRect(0, 0, 1, 1);
-  const [r, g, b, a] = probe.getImageData(0, 0, 1, 1).data;
-  return a > 0 ? { r, g, b } : fallback;
-}
 
 // Pop-out windows can carry their own theme variables, so read the document the canvas lives in.
 function readTheme(visuals: VisualSettings, doc: Document): { colors: FieldColors; font: string } {
