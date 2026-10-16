@@ -53,6 +53,17 @@ test("an empty tab moved into a pop-out follows that window's reduced-motion set
   assert.equal(ripple.field.running, false);
 });
 
+test("an empty tab in a pop-out takes that window's theme variables", async () => {
+  const { host, plugin } = await setup();
+  plugin.sync();
+  const popout = fakeWindow();
+  popout.styles["--font-monospace"] = "PopoutMono";
+  host.ownerDocument = popout.document;
+  plugin.sync();
+  const [ripple] = plugin.ripples.values();
+  assert.equal(ripple.field.font, "12px PopoutMono");
+});
+
 test("clearing the licence says so when data.json could not be written", async () => {
   const { plugin } = await setup();
   Object.defineProperty(plugin, "licensed", { get: () => true });

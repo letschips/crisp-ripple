@@ -39,6 +39,9 @@ export function fakeWindow({ openedAt = clock.wall, dpr = 1, reducedMotion = fal
     frames: new Map(),
     nextFrame: 1,
     queries: [],
+    /** Theme variables as this window's body resolves them. */
+    styles: {},
+    getComputedStyle: () => ({ getPropertyValue: (name) => win.styles[name] ?? "" }),
     setInterval: () => 0,
     requestAnimationFrame(cb) {
       const id = win.nextFrame++;
@@ -76,7 +79,7 @@ export function fakeWindow({ openedAt = clock.wall, dpr = 1, reducedMotion = fal
       });
     },
   };
-  win.document = { defaultView: win };
+  win.document = { defaultView: win, body: {} };
   return win;
 }
 
@@ -85,10 +88,10 @@ export function installMainWindow(win) {
   globalThis.window = win;
   globalThis.document = {
     defaultView: win,
-    body: {},
+    body: win.document.body,
     createElement: () => fakeCanvas(globalThis.document),
   };
-  globalThis.getComputedStyle = () => ({ getPropertyValue: () => "" });
+  globalThis.getComputedStyle = win.getComputedStyle;
   globalThis.ResizeObserver = class {
     observe() {}
     disconnect() {}

@@ -33,11 +33,17 @@ function parseColor(value: string, fallback: Rgb): Rgb {
   }
   const rgb = /rgba?\(([\d.]+),\s*([\d.]+),\s*([\d.]+)/.exec(normalized);
   if (rgb) return { r: +rgb[1], g: +rgb[2], b: +rgb[3] };
-  return fallback;
+  // color(), oklch() and color-mix() keep their own serialisation; paint one pixel to resolve them.
+  probe.canvas.width = probe.canvas.height = 1;
+  probe.fillStyle = normalized;
+  probe.fillRect(0, 0, 1, 1);
+  const [r, g, b, a] = probe.getImageData(0, 0, 1, 1).data;
+  return a > 0 ? { r, g, b } : fallback;
 }
 
-function readTheme(visuals: VisualSettings): { colors: FieldColors; font: string } {
-  const style = getComputedStyle(document.body);
+// Pop-out windows can carry their own theme variables, so read the document the canvas lives in.
+function readTheme(visuals: VisualSettings, doc: Document): { colors: FieldColors; font: string } {
+  const style = (doc.defaultView ?? window).getComputedStyle(doc.body);
   const base = parseColor(style.getPropertyValue("--text-muted"), { r: 120, g: 120, b: 120 });
   const fallback = { r: 80, g: 110, b: 230 };
   const accent =
@@ -79,7 +85,7 @@ class EmptyTabRipple {
     this.hostWindow = host.ownerDocument.defaultView ?? window;
     this.motionQuery = this.hostWindow.matchMedia("(prefers-reduced-motion: reduce)");
     this.motionQuery.addEventListener("change", this.onMotionChange);
-    const { colors, font } = readTheme(visuals());
+    const { colors, font } = readTheme(visuals(), host.ownerDocument);
     this.field = new AsciiField(this.canvas, colors, font, this.motionQuery.matches);
     this.field.setTuning(tuningOf(visuals()));
     this.observer = new ResizeObserver(() => this.syncSize());
@@ -94,7 +100,7 @@ class EmptyTabRipple {
   }
 
   refresh(): void {
-    const { colors, font } = readTheme(this.visuals());
+    const { colors, font } = readTheme(this.visuals(), this.host.ownerDocument);
     this.field.setColors(colors, font);
     this.field.setTuning(tuningOf(this.visuals()));
   }
