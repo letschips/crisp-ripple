@@ -1,6 +1,6 @@
 {
   "name": "crisp-ripple",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Ambient ASCII field with click ripples on Obsidian's empty new-tab page.",
   "main": "main.js",
   "type": "module",

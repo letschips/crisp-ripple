@@ -90,7 +90,8 @@ export class AsciiField {
   private frameWindow: Window = window;
   private lastDraw = 0;
   private running = false;
-  private readonly epoch = performance.now();
+  private readonly epoch: number;
+  private dprQuery: MediaQueryList | null = null;
   private tuning: FieldTuning = { speed: 1, strength: 1, density: 1 };
 
   constructor(
@@ -102,6 +103,7 @@ export class AsciiField {
     const ctx = canvas.getContext("2d");
     if (!ctx) throw new Error("Canvas 2D context unavailable");
     this.ctx = ctx;
+    this.epoch = this.now();
   }
 
   /** Follows the system setting live: stops motion at once, or resumes it. */
@@ -111,7 +113,7 @@ export class AsciiField {
     if (reduced) {
       this.ripples = [];
       this.stop();
-      if (this.width > 0) this.draw(performance.now());
+      if (this.width > 0) this.draw(this.now());
     }
   }
 
@@ -124,9 +126,29 @@ export class AsciiField {
     return this.hostWindow().devicePixelRatio || 1;
   }
 
+  /**
+   * Each window's performance.now() counts from its own timeOrigin, and a pop-out opens later
+   * than the main window. Absolute milliseconds stay comparable wherever the canvas moves.
+   */
+  private now(): number {
+    const { performance } = this.hostWindow();
+    return performance.timeOrigin + performance.now();
+  }
+
+  // A DPR change without a size change fires no ResizeObserver, and tick() stops under reduced motion.
+  private watchDpr(): void {
+    this.dprQuery?.removeEventListener("change", this.onDprChange);
+    this.dprQuery = this.hostWindow().matchMedia(`(resolution: ${this.dpr}dppx)`);
+    this.dprQuery.addEventListener("change", this.onDprChange);
+  }
+
+  private onDprChange = (): void => {
+    if (this.width > 0) this.resize(this.width, this.height);
+  };
+
   setTuning(tuning: FieldTuning): void {
     this.tuning = { ...tuning };
-    if (this.width > 0) this.draw(performance.now());
+    if (this.width > 0) this.draw(this.now());
   }
 
   setColors(colors: FieldColors, font: string): void {
@@ -140,7 +162,10 @@ export class AsciiField {
     if (!force && width === this.width && height === this.height && dpr === this.dpr) return;
     this.width = width;
     this.height = height;
-    this.dpr = dpr;
+    if (dpr !== this.dpr || !this.dprQuery) {
+      this.dpr = dpr;
+      this.watchDpr();
+    }
     this.canvas.width = Math.max(1, Math.round(width * dpr));
     this.canvas.height = Math.max(1, Math.round(height * dpr));
     this.ctx.font = this.font;
@@ -154,12 +179,12 @@ export class AsciiField {
       this.rows = rows;
       this.glyphs = Uint8Array.from({ length: cols * rows }, randomGlyph);
     }
-    this.draw(performance.now());
+    this.draw(this.now());
   }
 
   addRipple(x: number, y: number): void {
     if (this.reducedMotion) return;
-    this.ripples.push({ x, y, start: performance.now() });
+    this.ripples.push({ x, y, start: this.now() });
     if (this.ripples.length > MAX_RIPPLES) this.ripples.shift();
     this.start();
   }
@@ -176,8 +201,16 @@ export class AsciiField {
     this.frameWindow.cancelAnimationFrame(this.frame);
   }
 
-  private tick = (now: number): void => {
+  destroy(): void {
+    this.stop();
+    this.dprQuery?.removeEventListener("change", this.onDprChange);
+    this.dprQuery = null;
+  }
+
+  // The rAF timestamp is in the frame window's own time base, so read the shared clock instead.
+  private tick = (): void => {
     if (!this.running) return;
+    const now = this.now();
     this.frame = this.frameWindow.requestAnimationFrame(this.tick);
     // Moving a window to a screen with another scale changes DPR without resizing the canvas.
     if (this.windowDpr() !== this.dpr) this.resize(this.width, this.height);

@@ -61,6 +61,7 @@ class EmptyTabRipple {
   private readonly observer: ResizeObserver;
   private readonly host: HTMLElement;
   private readonly motionQuery: MediaQueryList;
+  private readonly hostWindow: Window;
 
   constructor(
     view: View,
@@ -75,7 +76,8 @@ class EmptyTabRipple {
     this.canvas.setAttr("aria-hidden", "true");
     host.prepend(this.canvas);
     // Each window delivers media-query changes only while it renders, so listen on the canvas's own window.
-    this.motionQuery = (host.ownerDocument.defaultView ?? window).matchMedia("(prefers-reduced-motion: reduce)");
+    this.hostWindow = host.ownerDocument.defaultView ?? window;
+    this.motionQuery = this.hostWindow.matchMedia("(prefers-reduced-motion: reduce)");
     this.motionQuery.addEventListener("change", this.onMotionChange);
     const { colors, font } = readTheme(visuals());
     this.field = new AsciiField(this.canvas, colors, font, this.motionQuery.matches);
@@ -86,8 +88,9 @@ class EmptyTabRipple {
     this.syncSize();
   }
 
+  /** False once the tab is gone or has moved to another window, where it must be rebuilt. */
   get attached(): boolean {
-    return this.canvas.isConnected;
+    return this.canvas.isConnected && this.host.ownerDocument.defaultView === this.hostWindow;
   }
 
   refresh(): void {
@@ -97,7 +100,7 @@ class EmptyTabRipple {
   }
 
   destroy(): void {
-    this.field.stop();
+    this.field.destroy();
     this.motionQuery.removeEventListener("change", this.onMotionChange);
     this.observer.disconnect();
     this.host.removeEventListener("pointerdown", this.onPointerDown);
@@ -433,9 +436,12 @@ class RippleSettingTab extends PluginSettingTab {
           .setButtonText("清除授权")
           .setWarning()
           .onClick(async () => {
-            await this.plugin.clearLicense();
+            const saved = await this.plugin.clearLicense();
             this.licenseDraft = "";
-            new Notice("已清除授权信息");
+            new Notice(
+              saved ? "已清除授权信息" : "本次运行已清除授权，但没能写入设置文件：重启后授权会恢复。",
+              saved ? undefined : 0,
+            );
             this.display();
           }),
       );
