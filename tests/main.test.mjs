@@ -76,3 +76,22 @@ test("clearing the licence says so when data.json could not be written", async (
   assert.ok(!notices.includes("已清除授权信息"), `got: ${notices.join(" | ")}`);
   assert.ok(notices.some((n) => n.includes("重启")), "must warn that the licence comes back after a restart");
 });
+
+test("a layout-ready callback that runs after unload creates no canvas", async () => {
+  const main = fakeWindow();
+  installMainWindow(main);
+  const host = new FakeElement(main.document);
+  const view = { contentEl: host };
+  const ready = [];
+  const app = {
+    raw: {},
+    vault: { adapter: { exists: async () => true, read: async () => "{}", write: async () => {} } },
+    workspace: { onLayoutReady: (cb) => ready.push(cb), on() {}, getLeavesOfType: () => [{ view }] },
+  };
+  const plugin = new CrispRipplePlugin(app, { dir: ".obsidian/plugins/crisp-ripple", version: "test" });
+  await plugin.onload();
+  plugin.onunload();
+  for (const cb of ready) cb();
+  assert.equal(plugin.ripples.size, 0);
+  assert.equal(host.children.filter((c) => c.tag === "canvas").length, 0);
+});

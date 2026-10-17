@@ -2,6 +2,7 @@
 // tested in Node.
 
 export type ColorMode = "blue" | "accent" | "custom";
+export type Shape = "glyph" | "dot";
 
 export interface VisualSettings {
   colorMode: ColorMode;
@@ -10,6 +11,9 @@ export interface VisualSettings {
   speed: number;
   strength: number;
   density: number;
+  shape: Shape;
+  /** pointer push and click shockwave, percentage; 0 = cells never move */
+  push: number;
 }
 
 export interface RippleSettings extends VisualSettings {
@@ -25,6 +29,8 @@ export const DEFAULT_VISUALS: VisualSettings = {
   speed: 100,
   strength: 100,
   density: 100,
+  shape: "glyph",
+  push: 100,
 };
 
 export const DEFAULT_SETTINGS: RippleSettings = {
@@ -39,6 +45,7 @@ export const RANGES = {
   speed: [50, 200],
   strength: [30, 150],
   density: [0, 200],
+  push: [0, 200],
 } as const;
 
 function clampNumber(value: unknown, [min, max]: readonly [number, number], fallback: number): number {
@@ -67,6 +74,8 @@ export function normalizeSettings(raw: unknown): RippleSettings {
     speed: clampNumber(r.speed, RANGES.speed, DEFAULT_SETTINGS.speed),
     strength: clampNumber(r.strength, RANGES.strength, DEFAULT_SETTINGS.strength),
     density: clampNumber(r.density, RANGES.density, DEFAULT_SETTINGS.density),
+    shape: r.shape === "dot" || r.shape === "glyph" ? r.shape : DEFAULT_SETTINGS.shape,
+    push: clampNumber(r.push, RANGES.push, DEFAULT_SETTINGS.push),
   };
 }
 
@@ -79,6 +88,8 @@ export function effectiveVisuals(settings: VisualSettings, licensed: boolean): V
     speed: settings.speed,
     strength: settings.strength,
     density: settings.density,
+    shape: settings.shape,
+    push: settings.push,
   };
 }
 

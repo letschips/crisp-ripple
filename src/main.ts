@@ -6,6 +6,7 @@ import { discoverVaultCrispLicenses, verifyLicenseCode } from "./license";
 import { ActivationOutcome, LicenseController, LicenseResult } from "./license-controller";
 import {
   ColorMode,
+  Shape,
   DEFAULT_VISUALS,
   RANGES,
   RippleSettings,
@@ -38,7 +39,12 @@ function readTheme(visuals: VisualSettings, doc: Document): { colors: FieldColor
 }
 
 function tuningOf(visuals: VisualSettings): FieldTuning {
-  return { speed: visuals.speed / 100, strength: visuals.strength / 100, density: visuals.density / 100 };
+  return {
+    speed: visuals.speed / 100,
+    strength: visuals.strength / 100,
+    density: visuals.density / 100,
+    push: visuals.push / 100,
+  };
 }
 
 class EmptyTabRipple {
@@ -67,10 +73,13 @@ class EmptyTabRipple {
     this.motionQuery.addEventListener("change", this.onMotionChange);
     const { colors, font } = readTheme(visuals(), host.ownerDocument);
     this.field = new AsciiField(this.canvas, colors, font, this.motionQuery.matches);
+    this.field.setShape(visuals().shape);
     this.field.setTuning(tuningOf(visuals()));
     this.observer = new ResizeObserver(() => this.syncSize());
     this.observer.observe(host);
     host.addEventListener("pointerdown", this.onPointerDown);
+    host.addEventListener("pointermove", this.onPointerMove);
+    host.addEventListener("pointerleave", this.onPointerLeave);
     this.syncSize();
   }
 
@@ -82,6 +91,7 @@ class EmptyTabRipple {
   refresh(): void {
     const { colors, font } = readTheme(this.visuals(), this.host.ownerDocument);
     this.field.setColors(colors, font);
+    this.field.setShape(this.visuals().shape);
     this.field.setTuning(tuningOf(this.visuals()));
   }
 
@@ -90,6 +100,8 @@ class EmptyTabRipple {
     this.motionQuery.removeEventListener("change", this.onMotionChange);
     this.observer.disconnect();
     this.host.removeEventListener("pointerdown", this.onPointerDown);
+    this.host.removeEventListener("pointermove", this.onPointerMove);
+    this.host.removeEventListener("pointerleave", this.onPointerLeave);
     this.host.removeClass(HOST_CLASS);
     this.canvas.remove();
   }
@@ -107,6 +119,15 @@ class EmptyTabRipple {
   private onMotionChange = (event: MediaQueryListEvent): void => {
     this.field.setReducedMotion(event.matches);
     if (!event.matches) this.syncSize();
+  };
+
+  private onPointerMove = (event: PointerEvent): void => {
+    const rect = this.canvas.getBoundingClientRect();
+    this.field.setPointer(event.clientX - rect.left, event.clientY - rect.top);
+  };
+
+  private onPointerLeave = (): void => {
+    this.field.clearPointer();
   };
 
   private onPointerDown = (event: PointerEvent): void => {
@@ -185,6 +206,8 @@ export default class CrispRipplePlugin extends Plugin {
       },
     });
     this.app.workspace.onLayoutReady(() => {
+      // Obsidian queues this callback; the plugin may have been disabled or reloaded before it runs.
+      if (this.unloaded) return;
       this.sync();
       void this.licenseController.refreshInBackground().catch((error) => {
         console.debug("Crisp Ripple background license check failed", error);
@@ -283,6 +306,7 @@ export default class CrispRipplePlugin extends Plugin {
   };
 
   private sync(): void {
+    if (this.unloaded) return;
     const views = new Set<View>();
     for (const leaf of this.app.workspace.getLeavesOfType("empty")) views.add(leaf.view);
     for (const [view, ripple] of this.ripples) {
@@ -357,12 +381,29 @@ class RippleSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl).setName("波纹外观").setHeading();
-    if (!licensed) this.lockedNote(containerEl, "未激活时使用默认外观；调节颜色、速度和浓淡需要激活。");
+    if (!licensed) this.lockedNote(containerEl, "未激活时使用默认外观；调节形态、颜色、速度、浓淡和推开力度需要激活。");
 
+    // Preview at once; the save reads data.json back and can lag behind a dragged slider.
     const save = async (): Promise<void> => {
-      await this.plugin.saveSettings();
       this.plugin.applyVisuals();
+      await this.plugin.saveSettings();
     };
+
+    new Setting(containerEl)
+      .setName("形态")
+      .setDesc("背景由字符组成，或由圆点组成。")
+      .setDisabled(!licensed)
+      .addDropdown((dropdown) =>
+        dropdown
+          .addOption("glyph", "字符")
+          .addOption("dot", "圆点")
+          .setValue(licensed ? settings.shape : DEFAULT_VISUALS.shape)
+          .setDisabled(!licensed)
+          .onChange(async (value) => {
+            settings.shape = value as Shape;
+            await save();
+          }),
+      );
 
     new Setting(containerEl)
       .setName("波纹颜色")
@@ -394,6 +435,7 @@ class RippleSettingTab extends PluginSettingTab {
     this.addPercentSlider("波纹速度", "波纹扩散和消失的快慢。", "speed", licensed, save);
     this.addPercentSlider("波纹浓淡", "点击后那一圈波纹的深浅。", "strength", licensed, save);
     this.addPercentSlider("背景浓淡", "平时缓慢漂移的背景字符的深浅，0% 为隐藏。", "density", licensed, save);
+    this.addPercentSlider("推开力度", "指针经过时把字符推开、点击时冲击波把字符推开的力度，0% 为不移动。", "push", licensed, save);
 
     new Setting(containerEl).setDisabled(!licensed).addButton((button) =>
       button
@@ -435,7 +477,7 @@ class RippleSettingTab extends PluginSettingTab {
       status.setDesc(
         license.reason
           ? `未激活：${license.reason}`
-          : "未激活。背景字符和默认波纹可以直接使用；水滴音效和外观调节需要激活。",
+          : "未激活。背景字符、指针推开和默认波纹可以直接使用；水滴音效和外观调节需要激活。",
       );
     }
 
@@ -494,7 +536,7 @@ class RippleSettingTab extends PluginSettingTab {
   private renderAbout(containerEl: HTMLElement): void {
     const card = containerEl.createDiv({ cls: "crisp-ripple-about" });
     card.createDiv({ cls: "crisp-ripple-about__title", text: `关于 Crisp Ripple ${this.plugin.manifest.version}` });
-    card.createDiv({ cls: "crisp-ripple-about__description", text: "让空标签页泛起一圈字符波纹。" });
+    card.createDiv({ cls: "crisp-ripple-about__description", text: "让空标签页泛起一圈字符波纹，指针经过时字符会被推开。" });
     const byline = card.createEl("p", { cls: "crisp-ripple-about__author" });
     byline.createSpan({ text: "作者：" });
     const link = byline.createEl("a", { cls: "crisp-ripple-about__author-link", text: "小红书 letschips", href: AUTHOR_URL });
@@ -505,7 +547,7 @@ class RippleSettingTab extends PluginSettingTab {
   private addPercentSlider(
     name: string,
     desc: string,
-    key: "speed" | "strength" | "density",
+    key: "speed" | "strength" | "density" | "push",
     licensed: boolean,
     save: () => Promise<void>,
   ): void {

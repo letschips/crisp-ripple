@@ -69,3 +69,14 @@ test("out-of-range and malformed values are clamped or reset", () => {
   assert.equal(s.customColor, "#5b7cfa");
   assert.equal(s.licenseCode, "abc.def");
 });
+
+test("shape and push are licensed appearance settings with safe fallbacks", () => {
+  const s = normalizeSettings({ shape: "dot", push: 0 });
+  assert.equal(s.shape, "dot");
+  assert.equal(s.push, 0, "0% push turns displacement off and must survive");
+  assert.deepEqual(effectiveVisuals(s, false), DEFAULT_VISUALS);
+  assert.equal(effectiveVisuals(s, true).shape, "dot");
+  const bad = normalizeSettings({ shape: "star", push: 500 });
+  assert.equal(bad.shape, "glyph");
+  assert.equal(bad.push, 200);
+});
