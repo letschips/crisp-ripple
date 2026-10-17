@@ -17,6 +17,8 @@ export interface VisualSettings {
 }
 
 export interface RippleSettings extends VisualSettings {
+  /** Show the field at all. Free for everyone: switching it off is never a paid feature. */
+  background: boolean;
   sound: boolean;
   /** 10–100, percentage of the default drop level */
   volume: number;
@@ -34,6 +36,7 @@ export const DEFAULT_VISUALS: VisualSettings = {
 };
 
 export const DEFAULT_SETTINGS: RippleSettings = {
+  background: true,
   sound: true,
   volume: 100,
   licenseCode: "",
@@ -66,6 +69,7 @@ export function normalizeSettings(raw: unknown): RippleSettings {
       ? r.customColor
       : DEFAULT_SETTINGS.customColor;
   return {
+    background: typeof r.background === "boolean" ? r.background : DEFAULT_SETTINGS.background,
     sound: typeof r.sound === "boolean" ? r.sound : DEFAULT_SETTINGS.sound,
     volume: clampNumber(r.volume, RANGES.volume, DEFAULT_SETTINGS.volume),
     licenseCode: typeof r.licenseCode === "string" ? r.licenseCode.trim() : "",

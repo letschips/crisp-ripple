@@ -20,6 +20,8 @@ import { DropSound } from "./sound";
 const PLUGIN_ID = "crisp-ripple";
 const HOST_CLASS = "crisp-ripple-host";
 const CANVAS_CLASS = "crisp-ripple-canvas";
+// Obsidian's empty-tab buttons are `button.empty-state-action`.
+const EMPTY_STATE_CONTROLS = ".empty-state-action, button, a, input";
 const AUTHOR_URL = "https://xhslink.cn/m/3MwtKu4822b";
 
 // Pop-out windows can carry their own theme variables, so read the document the canvas lives in.
@@ -71,16 +73,31 @@ class EmptyTabRipple {
     this.hostWindow = host.ownerDocument.defaultView ?? window;
     this.motionQuery = this.hostWindow.matchMedia("(prefers-reduced-motion: reduce)");
     this.motionQuery.addEventListener("change", this.onMotionChange);
-    const { colors, font } = readTheme(visuals(), host.ownerDocument);
-    this.field = new AsciiField(this.canvas, colors, font, this.motionQuery.matches);
-    this.field.setShape(visuals().shape);
-    this.field.setTuning(tuningOf(visuals()));
-    this.observer = new ResizeObserver(() => this.syncSize());
-    this.observer.observe(host);
-    host.addEventListener("pointerdown", this.onPointerDown);
-    host.addEventListener("pointermove", this.onPointerMove);
-    host.addEventListener("pointerleave", this.onPointerLeave);
-    this.syncSize();
+    let field: AsciiField | undefined;
+    let observer: ResizeObserver | undefined;
+    try {
+      const { colors, font } = readTheme(visuals(), host.ownerDocument);
+      this.field = field = new AsciiField(this.canvas, colors, font, this.motionQuery.matches);
+      field.setShape(visuals().shape);
+      field.setTuning(tuningOf(visuals()));
+      this.observer = observer = new ResizeObserver(() => this.syncSize());
+      observer.observe(host);
+      host.addEventListener("pointerdown", this.onPointerDown);
+      host.addEventListener("pointermove", this.onPointerMove);
+      host.addEventListener("pointerleave", this.onPointerLeave);
+      this.syncSize();
+    } catch (error) {
+      // Leave the tab exactly as Obsidian made it.
+      field?.destroy();
+      observer?.disconnect();
+      this.motionQuery.removeEventListener("change", this.onMotionChange);
+      host.removeEventListener("pointerdown", this.onPointerDown);
+      host.removeEventListener("pointermove", this.onPointerMove);
+      host.removeEventListener("pointerleave", this.onPointerLeave);
+      host.removeClass(HOST_CLASS);
+      this.canvas.remove();
+      throw error;
+    }
   }
 
   /** False once the tab is gone or has moved to another window, where it must be rebuilt. */
@@ -93,6 +110,8 @@ class EmptyTabRipple {
     this.field.setColors(colors, font);
     this.field.setShape(this.visuals().shape);
     this.field.setTuning(tuningOf(this.visuals()));
+    // A field that went idle with the background hidden restarts here once a setting can show it.
+    this.syncSize();
   }
 
   destroy(): void {
@@ -132,6 +151,9 @@ class EmptyTabRipple {
 
   private onPointerDown = (event: PointerEvent): void => {
     if (event.button !== 0) return;
+    // The empty tab's own actions open a note or a dialog at once, so the ring would never be seen.
+    const target = event.target as Element | null;
+    if (target?.closest?.(EMPTY_STATE_CONTROLS)) return;
     const rect = this.canvas.getBoundingClientRect();
     const x = event.clientX - rect.left;
     this.field.addRipple(x, event.clientY - rect.top);
@@ -312,10 +334,20 @@ export default class CrispRipplePlugin extends Plugin {
     this.sound.play({ pan, seed: Math.random(), volume: this.rippleSettings.volume / 100 });
   };
 
+  /** Shows or removes the field on every empty tab; not tied to the licence. */
+  async setBackground(on: boolean): Promise<void> {
+    this.rippleSettings.background = on;
+    this.sync();
+    await this.saveSettings();
+  }
+
   private sync(): void {
     if (this.unloaded) return;
     const views = new Set<View>();
-    for (const leaf of this.app.workspace.getLeavesOfType("empty")) views.add(leaf.view);
+    // With the background off no tab gets a canvas, so nothing draws or listens.
+    if (this.rippleSettings.background) {
+      for (const leaf of this.app.workspace.getLeavesOfType("empty")) views.add(leaf.view);
+    }
     for (const [view, ripple] of this.ripples) {
       if (!views.has(view) || !ripple.attached) {
         ripple.destroy();
@@ -323,8 +355,12 @@ export default class CrispRipplePlugin extends Plugin {
       }
     }
     for (const view of views) {
-      if (!this.ripples.has(view)) {
+      if (this.ripples.has(view)) continue;
+      // One tab that cannot host a canvas must not keep the others from getting theirs.
+      try {
         this.ripples.set(view, new EmptyTabRipple(view, this.visuals, this.playDrop));
+      } catch (error) {
+        console.debug("Crisp Ripple could not decorate an empty tab", error);
       }
     }
   }
@@ -346,7 +382,17 @@ class RippleSettingTab extends PluginSettingTab {
 
     this.renderLicense(containerEl);
 
-    new Setting(containerEl).setName("点击音效").setHeading();
+    new Setting(containerEl).setName("背景").setHeading();
+    new Setting(containerEl)
+      .setName("显示字符背景")
+      .setDesc("关闭后，空标签页恢复 Obsidian 原样，不再显示字符背景和波纹。")
+      .addToggle((toggle) =>
+        toggle.setValue(settings.background).onChange(async (value) => {
+          await this.plugin.setBackground(value);
+        }),
+      );
+
+    new Setting(containerEl).setName("声音").setHeading();
     if (!licensed) this.lockedNote(containerEl, "水滴音效需要激活后使用。");
 
     new Setting(containerEl)

@@ -15,8 +15,8 @@
   z-index: 0;
 }
 
+/* Obsidian already positions .empty-state absolutely over the whole tab; only lift it above the canvas. */
 .crisp-ripple-host > .empty-state {
-  position: relative;
   z-index: 1;
 }
 

@@ -80,3 +80,10 @@ test("shape and push are licensed appearance settings with safe fallbacks", () =
   assert.equal(bad.shape, "glyph");
   assert.equal(bad.push, 200);
 });
+
+test("the background switch is on by default and stays off once saved, licence or not", () => {
+  assert.equal(DEFAULT_SETTINGS.background, true);
+  assert.equal(normalizeSettings({}).background, true);
+  assert.equal(normalizeSettings({ background: "no" }).background, true);
+  assert.equal(normalizeSettings({ background: false }).background, false);
+});

@@ -114,3 +114,55 @@ test("rapid setting changes coalesce into few writes and the last value is saved
   assert.ok(writes <= 2, `expected the pending saves to merge, got ${writes} writes`);
   assert.equal(JSON.parse(stored).speed, 145);
 });
+
+test("a click on one of the empty tab's own buttons sends no ripple", async () => {
+  const { host, plugin } = await setup();
+  plugin.sync();
+  const ripple = [...plugin.ripples.values()][0];
+  const down = host.listeners.get("pointerdown");
+  const action = { closest: (selector) => (selector.includes(".empty-state-action") ? {} : null) };
+  down({ button: 0, clientX: 400, clientY: 300, target: action });
+  assert.equal(ripple.field.ripples.length, 0, "the button opens something else; the ring would never be seen");
+  down({ button: 0, clientX: 400, clientY: 300, target: { closest: () => null } });
+  assert.equal(ripple.field.ripples.length, 1, "a click on the background still ripples");
+});
+
+test("an empty tab whose canvas has no 2D context leaves no trace and does not block the others", async () => {
+  const main = fakeWindow();
+  installMainWindow(main);
+  const broken = new FakeElement(main.document);
+  const createEl = broken.createEl.bind(broken);
+  broken.createEl = (tag, o) => {
+    const el = createEl(tag, o);
+    if (tag === "canvas") el.getContext = () => null;
+    return el;
+  };
+  const healthy = new FakeElement(main.document);
+  const views = [{ contentEl: broken }, { contentEl: healthy }];
+  const app = {
+    raw: {},
+    vault: { adapter: { exists: async () => true, read: async () => "{}", write: async () => {} } },
+    workspace: { onLayoutReady() {}, on() {}, getLeavesOfType: () => views.map((view) => ({ view })) },
+  };
+  const plugin = new CrispRipplePlugin(app, { dir: ".obsidian/plugins/crisp-ripple", version: "test" });
+  await plugin.onload();
+  plugin.sync();
+  assert.equal(plugin.ripples.size, 1, "the healthy tab still gets its canvas");
+  assert.equal(broken.classes.size, 0, "the broken tab keeps Obsidian's own classes only");
+  assert.ok(broken.children.every((c) => c.tag !== "canvas" || !c.isConnected), "its canvas is removed again");
+  assert.equal(broken.listeners.size, 0);
+});
+
+test("turning the background off removes every canvas, and turning it on brings them back", async () => {
+  const { host, plugin } = await setup();
+  plugin.sync();
+  assert.equal(plugin.ripples.size, 1);
+  plugin.options.background = false;
+  plugin.sync();
+  assert.equal(plugin.ripples.size, 0, "an unlicensed user can still switch the canvas off");
+  assert.ok(host.children.every((c) => c.tag !== "canvas" || !c.isConnected));
+  assert.equal(host.classes.size, 0);
+  plugin.options.background = true;
+  plugin.sync();
+  assert.equal(plugin.ripples.size, 1);
+});

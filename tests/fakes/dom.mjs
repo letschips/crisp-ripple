@@ -5,7 +5,7 @@ export const clock = { wall: 1_000_000 };
 
 function fakeContext() {
   return new Proxy(
-    { measureText: () => ({ width: 7 }) },
+    { measureText: () => ({ width: 7 }), createPattern: () => ({}), createImageData: (w, h) => ({ data: new Uint8ClampedArray(w * h * 4) }) },
     { get: (target, key) => (key in target ? target[key] : () => {}), set: () => true },
   );
 }

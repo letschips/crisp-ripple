@@ -134,7 +134,7 @@ export async function importEd25519PublicKey(pem: string): Promise<CryptoKey> {
     "spki",
     derArrayBuffer,
     { name: "Ed25519" },
-    true,
+    false,
     ["verify"],
   );
 }

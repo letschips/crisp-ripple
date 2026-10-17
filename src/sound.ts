@@ -59,7 +59,7 @@ export function scheduleDrop(
   tail: AudioBuffer,
   at: number,
   { pan, seed, volume }: DropOptions,
-): void {
+): AudioNode {
   const master = ctx.createGain();
   master.gain.value = MASTER_GAIN * Math.max(0, Math.min(1, volume));
   const panner = ctx.createStereoPanner();
@@ -78,7 +78,11 @@ export function scheduleDrop(
   const base = 420 + seed * 220;
   bubble(ctx, dry, at, base, 0.9, 0.11);
   bubble(ctx, dry, at + 0.09 + seed * 0.05, base * 1.7, 0.3, 0.07);
+  return master;
 }
+
+/** The second bubble starts by 0.14 s and lasts 0.09 s; the reverb tail rings on after it. */
+const DROP_SECONDS = 0.25 + TAIL_SECONDS;
 
 export class DropSound {
   private ctx: AudioContext | null = null;
@@ -91,7 +95,9 @@ export class DropSound {
     }
     const ctx = this.ctx;
     if (ctx.state === "suspended") void ctx.resume();
-    scheduleDrop(ctx, ctx.destination, this.tail as AudioBuffer, ctx.currentTime + 0.005, options);
+    const master = scheduleDrop(ctx, ctx.destination, this.tail as AudioBuffer, ctx.currentTime + 0.005, options);
+    // Detach each drop's chain once it has rung out, so repeated clicks do not leave convolvers on the graph.
+    window.setTimeout(() => master.disconnect(), DROP_SECONDS * 1000 + 100);
   }
 
   dispose(): void {

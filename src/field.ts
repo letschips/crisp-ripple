@@ -15,7 +15,7 @@ const IDLE_FRAME_MS = 50; // drift-only frames run at ~20 fps
 
 const DOT_CELL = 10; // CSS px between dots
 const DOT_RADIUS = 1.3;
-const DOT_FLOOR = 0.06; // alpha of a resting dot, drawn for the whole grid with one pattern fill
+const DOT_FLOOR = 0.06; // alpha of the faintest resting dot
 const SPRING_K = 140; // stiffness, 1/s²
 const SPRING_C = 9; // damping, 1/s: a little overshoot before settling
 const POINTER_REACH = 90; // px
@@ -24,6 +24,8 @@ const SHOCK_FORCE = 7000; // px/s² on the wavefront
 const SHOCK_WIDTH = 18; // px, sigma of the wavefront band
 const MAX_OFFSET = 90;
 const MAX_STEP = 1 / 120; // integration step, s
+// The drift noise has features ~200 px wide, so it is sampled on a ~30 px lattice and interpolated per cell.
+const NOISE_STEP_PX = 28;
 
 export type FieldShape = "glyph" | "dot";
 
@@ -95,6 +97,9 @@ export class AsciiField {
   // One resting dot at full alpha; tiled across the canvas in a single fill.
   private readonly dotTile = document.createElement("canvas");
   private dotPattern: CanvasPattern | null = null;
+  // Resting dot alpha per noise-lattice point, scaled up over the pattern fill.
+  private readonly mask = document.createElement("canvas");
+  private maskData: ImageData | null = null;
   // Dots that differ from the resting grid this frame: home position, drawn position, atlas row.
   private drawList = new Int32Array(0);
   private dpr = 1;
@@ -129,6 +134,11 @@ export class AsciiField {
   private moving = false;
   /** The last frame put nothing on the canvas. */
   private blank = false;
+  /** Cell size and scale the atlas was last built for; a plain resize keeps it. */
+  private atlasKey = "";
+  // Drift noise on a coarse lattice: noise value and warp (wx + wy) per lattice point.
+  private latN = new Float32Array(0);
+  private latW = new Float32Array(0);
 
   constructor(
     private readonly canvas: HTMLCanvasElement,
@@ -244,7 +254,11 @@ export class AsciiField {
       this.cellW = Math.max(4, this.ctx.measureText("M").width);
       this.cellH = Math.round(this.cellW * 2.1);
     }
-    this.buildAtlas();
+    const atlasKey = `${this.cellW}|${this.cellH}|${dpr}`;
+    if (force || atlasKey !== this.atlasKey) {
+      this.atlasKey = atlasKey;
+      this.buildAtlas();
+    }
     const cols = Math.ceil(width / this.cellW);
     const rows = Math.ceil(height / this.cellH);
     if (cols !== this.cols || rows !== this.rows) {
@@ -297,7 +311,11 @@ export class AsciiField {
     const still = this.ripples.length === 0 && !this.moving;
     if (still && now - this.lastDraw < IDLE_FRAME_MS) return;
     // Hidden background, no ripple, nothing displaced: the canvas stays empty until a click or a setting changes.
-    if (still && this.blank && this.tuning.density <= 0 && !this.displaced) return;
+    // Release the frame loop too, so the window can go idle; a click, a pointer push or a resize starts it again.
+    if (still && this.blank && this.tuning.density <= 0 && !this.displaced) {
+      this.stop();
+      return;
+    }
     this.draw(now);
   };
 
@@ -368,8 +386,12 @@ export class AsciiField {
       const reach = 220 + 0.16 * Math.max(this.width, this.height);
       const radius = reach * (1 - Math.exp(-age / RIPPLE_TAU));
       const fade = Math.pow(Math.max(0, 1 - age / RIPPLE_LIFE), 1.6);
-      const d = Math.hypot(px - rp.x, py - rp.y) + warp * (20 + radius * 0.18);
+      const ex = px - rp.x;
+      const ey = py - rp.y;
+      const d = Math.sqrt(ex * ex + ey * ey) + warp * (20 + radius * 0.18);
       const u = radius - d; // distance behind the wavefront
+      // Ahead of the front the ring is exp(-u²/120): below 1e-7 past 45 px, so skip the exp.
+      if (u < -45) continue;
       let v: number;
       if (u < 0) {
         v = Math.exp(-(u * u) / 120);
@@ -441,7 +463,7 @@ export class AsciiField {
         for (const w of waves) {
           const dx = hx - w.x;
           const dy = hy - w.y;
-          const d = Math.hypot(dx, dy);
+          const d = Math.sqrt(dx * dx + dy * dy);
           const u = d - w.radius;
           if (d < 0.5 || u > band || u < -band) continue;
           const f = (w.force * Math.exp(-(u * u) / (2 * SHOCK_WIDTH * SHOCK_WIDTH))) / d;
@@ -458,7 +480,7 @@ export class AsciiField {
             // The pointer pushes on where the cell is now, so pushed cells pile up at the rim.
             let dx = hx + ox - pointer.x;
             let dy = hy + oy - pointer.y;
-            let d = Math.hypot(dx, dy);
+            let d = Math.sqrt(dx * dx + dy * dy);
             if (d < POINTER_REACH) {
               if (d < 0.5) {
                 const angle = hash(col, row) * Math.PI * 2;
@@ -476,7 +498,7 @@ export class AsciiField {
           ox += vx * h;
           oy += vy * h;
         }
-        const m = Math.hypot(ox, oy);
+        const m = Math.sqrt(ox * ox + oy * oy);
         if (m > MAX_OFFSET) {
           ox *= MAX_OFFSET / m;
           oy *= MAX_OFFSET / m;
@@ -497,6 +519,61 @@ export class AsciiField {
     this.moving = moving;
   }
 
+  /** Samples the drifting noise on a coarse lattice; draw() interpolates it per cell. */
+  private sampleNoise(drift: number, sx: number, sy: number, lx: number, ly: number): void {
+    if (this.latN.length < lx * ly) {
+      this.latN = new Float32Array(lx * ly);
+      this.latW = new Float32Array(lx * ly);
+    }
+    const { latN, latW, cellW, cellH } = this;
+    for (let lj = 0; lj < ly; lj++) {
+      const ny = lj * sy * cellH * 0.0045;
+      for (let li = 0; li < lx; li++) {
+        const nx = li * sx * cellW * 0.0045;
+        // Domain-warped noise gives the slow marbled drift of the idle state.
+        const wx = noise(nx * 0.7 + drift * 0.03, ny * 0.7) - 0.5;
+        const wy = noise(nx * 0.7 + 17.3, ny * 0.7 - drift * 0.025) - 0.5;
+        const k = lj * lx + li;
+        latN[k] = noise(nx + wx * 2.4 + drift * 0.04, ny + wy * 2.4 - drift * 0.02);
+        latW[k] = wx + wy;
+      }
+    }
+  }
+
+  /**
+   * Dot mode's resting grid: one pattern fill at full alpha, then the lattice's resting alpha
+   * applied as a smoothly scaled mask. Three canvas calls however large the window is.
+   */
+  private drawRestingDots(sx: number, sy: number, lx: number, ly: number): boolean {
+    const { ctx, cellW, cellH, dpr, latN } = this;
+    const density = this.tuning.density;
+    if (!this.dotPattern || density <= 0) return false;
+    if (this.mask.width !== lx || this.mask.height !== ly) {
+      this.mask.width = lx;
+      this.mask.height = ly;
+      this.maskData = null;
+    }
+    const mctx = this.mask.getContext("2d");
+    if (!mctx) return false;
+    const data = (this.maskData ??= mctx.createImageData(lx, ly));
+    const px = data.data;
+    for (let k = 0; k < lx * ly; k++) {
+      const alpha = (DOT_FLOOR + 0.12 * smoothstep(0.4, 0.9, latN[k])) * density;
+      px[k * 4 + 3] = Math.round(Math.min(1, alpha) * 255);
+    }
+    mctx.putImageData(data, 0, 0);
+    ctx.fillStyle = this.dotPattern;
+    ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+    // Lattice point (li, lj) stands for the dot centred in cell (li·sx, lj·sy).
+    const stepX = sx * cellW;
+    const stepY = sy * cellH;
+    ctx.globalCompositeOperation = "destination-in";
+    ctx.imageSmoothingEnabled = true;
+    ctx.drawImage(this.mask, (cellW - stepX) / 2 * dpr, (cellH - stepY) / 2 * dpr, lx * stepX * dpr, ly * stepY * dpr);
+    ctx.globalCompositeOperation = "source-over";
+    return true;
+  }
+
   private draw(now: number): void {
     this.lastDraw = now;
     this.pruneRipples(now);
@@ -507,39 +584,47 @@ export class AsciiField {
     const t = (now - this.epoch) / 1000;
     const drift = this.reducedMotion ? 0 : t;
     const hasRipples = this.ripples.length > 0;
+    const sx = Math.max(1, Math.round(NOISE_STEP_PX / cellW));
+    const sy = Math.max(1, Math.round(NOISE_STEP_PX / cellH));
+    const lx = Math.floor(Math.max(0, cols - 1) / sx) + 2;
+    const ly = Math.floor(Math.max(0, rows - 1) / sy) + 2;
+    this.sampleNoise(drift, sx, sy, lx, ly);
+    const { latN, latW } = this;
 
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
-    // Dot mode: the resting grid is one pattern fill; only dots that differ from it are drawn one by one.
-    const floor = dot && this.dotPattern ? DOT_FLOOR * this.tuning.density : 0;
-    if (floor > 0 && this.dotPattern) {
-      ctx.globalAlpha = Math.min(1, floor);
-      ctx.fillStyle = this.dotPattern;
-      ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
-      ctx.globalAlpha = 1;
-    }
+    const resting = dot && this.drawRestingDots(sx, sy, lx, ly);
     const list = this.drawList;
     let listed = 0;
     let drawn = 0;
-    for (let row = 0; row < rows; row++) {
+    // Resting dots are all in the mask already; only ripples and pushed dots need drawing one by one.
+    const perCell = !dot || hasRipples || displaced;
+    for (let row = 0; perCell && row < rows; row++) {
       const py = row * cellH;
+      const lj = (row / sy) | 0;
+      const ty = (row - lj * sy) / sy;
       for (let col = 0; col < cols; col++) {
         const i = row * cols + col;
         const px = col * cellW;
-        const nx = px * 0.0045;
-        const ny = py * 0.0045;
-        // Domain-warped noise gives the slow marbled drift of the idle state.
-        const wx = noise(nx * 0.7 + drift * 0.03, ny * 0.7) - 0.5;
-        const wy = noise(nx * 0.7 + 17.3, ny * 0.7 - drift * 0.025) - 0.5;
-        const n = noise(nx + wx * 2.4 + drift * 0.04, ny + wy * 2.4 - drift * 0.02);
-        let alpha = (dot ? 0.06 + 0.12 * smoothstep(0.4, 0.9, n) : 0.02 + 0.075 * smoothstep(0.55, 0.9, n)) *
+        const li = (col / sx) | 0;
+        const tx = (col - li * sx) / sx;
+        const k0 = lj * lx + li;
+        const k1 = k0 + lx;
+        const nTop = latN[k0] + (latN[k0 + 1] - latN[k0]) * tx;
+        const nBottom = latN[k1] + (latN[k1 + 1] - latN[k1]) * tx;
+        const n = nTop + (nBottom - nTop) * ty;
+        let alpha = (dot ? DOT_FLOOR + 0.12 * smoothstep(0.4, 0.9, n) : 0.02 + 0.075 * smoothstep(0.55, 0.9, n)) *
           this.tuning.density;
         let tint = 0;
+        let lit = false;
         if (hasRipples) {
-          const r = this.rippleAt(px, py, wx + wy, now);
+          const wTop = latW[k0] + (latW[k0 + 1] - latW[k0]) * tx;
+          const wBottom = latW[k1] + (latW[k1 + 1] - latW[k1]) * tx;
+          const r = this.rippleAt(px, py, wTop + (wBottom - wTop) * ty, now);
           if (r > 0.02) {
             alpha += r * 0.6 * this.tuning.strength;
             tint = Math.min(1, r * 1.8);
+            lit = true;
             if (r > 0.35 && Math.random() < 0.06) this.glyphs[i] = randomGlyph();
           }
         }
@@ -549,17 +634,18 @@ export class AsciiField {
           ox = offX[i];
           oy = offY[i];
           // Moved cells light up, so the push shows even where the background is faint.
-          const lift = Math.min(1, Math.hypot(ox, oy) / 16);
+          const lift = Math.min(1, Math.sqrt(ox * ox + oy * oy) / 16);
           if (lift > 0.02) {
             alpha += lift * 0.45 * this.tuning.strength;
             tint = Math.max(tint, Math.min(1, lift * 1.6));
+            lit = true;
           }
         }
+        if (dot && resting && !lit && ox === 0 && oy === 0) continue;
         if (alpha < 0.03) continue;
         const a = Math.min(ALPHA_LEVELS - 1, Math.floor((alpha / 0.75) * ALPHA_LEVELS));
         const k = Math.min(TINT_LEVELS - 1, Math.floor(tint * TINT_LEVELS));
         if (dot) {
-          if (floor > 0 && ox === 0 && oy === 0 && tint === 0 && alpha - floor < 0.03) continue;
           const at = listed * 5;
           list[at] = col;
           list[at + 1] = row;
@@ -584,10 +670,10 @@ export class AsciiField {
       }
     }
 
-    this.blank = drawn === 0 && listed === 0 && floor === 0;
+    this.blank = drawn === 0 && listed === 0 && !resting;
     if (listed > 0) {
-      // Lift these dots out of the pattern at home, then draw them where they are now.
-      if (floor > 0) {
+      // Lift these dots out of the resting grid at home, then draw them where they are now.
+      if (resting) {
         for (let j = 0; j < listed * 5; j += 5) ctx.clearRect(list[j] * spriteW, list[j + 1] * spriteH, spriteW, spriteH);
       }
       for (let j = 0; j < listed * 5; j += 5) {

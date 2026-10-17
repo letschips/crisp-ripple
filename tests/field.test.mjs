@@ -186,3 +186,45 @@ test("an invisible field stops drawing until something can show", () => {
   run(host, 0.5);
   assert.ok(counter.draws > 20, "a click ripple must still animate");
 });
+
+// 0.2.1 audit (2026-10-17): idle cost on large or invisible fields.
+test("an invisible field releases its frame loop and a click starts it again", () => {
+  const { host, field } = setup();
+  field.setTuning({ speed: 1, strength: 1, density: 0, push: 0 });
+  field.start();
+  run(host, 1);
+  assert.equal(host.frames.size, 0, "no animation frame may stay queued while nothing can show");
+  const counter = countDraws(field);
+  field.addRipple(400, 300);
+  run(host, 0.5);
+  assert.ok(counter.draws > 20, "a click ripple must still animate");
+});
+
+test("a resize that keeps the cell size reuses the glyph atlas", () => {
+  const { field } = setup();
+  let builds = 0;
+  const build = field.buildAtlas.bind(field);
+  field.buildAtlas = () => {
+    builds++;
+    build();
+  };
+  field.resize(1200, 700);
+  field.resize(640, 480);
+  assert.equal(builds, 0, "a size change alone must not rebuild the atlas");
+  field.setColors({ base: { r: 10, g: 10, b: 10 }, accent: colors.accent }, "12px monospace");
+  assert.equal(builds, 1, "a colour change still rebuilds it");
+});
+
+test("resting dots at default density come from the pattern fill, not one by one", () => {
+  const { field } = setup();
+  field.setShape("dot");
+  field.setTuning({ speed: 1, strength: 1, density: 1, push: 0 });
+  const calls = { drawImage: 0, clearRect: 0 };
+  const ctx = field.ctx;
+  field.ctx = new Proxy(ctx, {
+    get: (target, key) => (key in calls ? (...args) => (calls[key]++, target[key](...args)) : target[key]),
+  });
+  field.draw(field.lastDraw + 1000);
+  const cells = field.cols * field.rows;
+  assert.ok(calls.drawImage < cells * 0.4, `expected most resting dots to come from the pattern, drew ${calls.drawImage} of ${cells}`);
+});
