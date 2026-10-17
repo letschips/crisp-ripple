@@ -151,3 +151,38 @@ test("with push off, a pointer pass does not keep frames at full rate", () => {
   run(host, 2);
   assert.ok(draws <= 45, `idle frames should run at ~20 fps, got ${draws} draws in 2 s`);
 });
+
+// 0.2.0 audit, round 2: work that cannot change a pixel must not run at full rate.
+function countDraws(field) {
+  const counter = { draws: 0 };
+  const draw = field.draw.bind(field);
+  field.draw = (now) => {
+    counter.draws++;
+    draw(now);
+  };
+  return counter;
+}
+
+test("with push off, a pointer that keeps moving does not force full-rate frames", () => {
+  const { host, field } = setup();
+  field.setTuning({ speed: 1, strength: 1, density: 1, push: 0 });
+  const counter = countDraws(field);
+  for (let t = 0; t < 2; t += 1 / 60) {
+    field.setPointer(300 + t * 100, 300); // a pointermove before every frame
+    clock.wall += 1000 / 60;
+    host.flush();
+  }
+  assert.ok(counter.draws <= 45, `expected the ~20 fps idle cadence, got ${counter.draws} draws in 2 s`);
+});
+
+test("an invisible field stops drawing until something can show", () => {
+  const { host, field } = setup();
+  field.setTuning({ speed: 1, strength: 1, density: 0, push: 0 });
+  field.start(); // the plugin starts every field once it has a size
+  const counter = countDraws(field);
+  run(host, 2);
+  assert.ok(counter.draws <= 1, `nothing can show, got ${counter.draws} draws in 2 s`);
+  field.addRipple(400, 300);
+  run(host, 0.5);
+  assert.ok(counter.draws > 20, "a click ripple must still animate");
+});

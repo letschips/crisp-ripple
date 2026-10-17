@@ -127,6 +127,8 @@ export class AsciiField {
   private displaced = false;
   /** Some cell is still visibly moving, so frames run at full rate. */
   private moving = false;
+  /** The last frame put nothing on the canvas. */
+  private blank = false;
 
   constructor(
     private readonly canvas: HTMLCanvasElement,
@@ -195,8 +197,14 @@ export class AsciiField {
   }
 
   /** Pointer position in canvas CSS px. */
+  // The pointer only changes pixels through the push, so without it a move needs no frame.
+  private get pushActive(): boolean {
+    return !this.reducedMotion && this.tuning.push > 0;
+  }
+
   setPointer(x: number, y: number): void {
     this.pointer = { x, y };
+    if (!this.pushActive) return;
     this.moving = true;
     this.start();
   }
@@ -204,7 +212,7 @@ export class AsciiField {
   clearPointer(): void {
     if (!this.pointer) return;
     this.pointer = null;
-    this.moving = true;
+    if (this.pushActive) this.moving = true;
   }
 
   setColors(colors: FieldColors, font: string): void {
@@ -286,7 +294,10 @@ export class AsciiField {
     // Moving a window to a screen with another scale changes DPR without resizing the canvas.
     if (this.windowDpr() !== this.dpr) this.resize(this.width, this.height);
     this.pruneRipples(now);
-    if (this.ripples.length === 0 && !this.moving && now - this.lastDraw < IDLE_FRAME_MS) return;
+    const still = this.ripples.length === 0 && !this.moving;
+    if (still && now - this.lastDraw < IDLE_FRAME_MS) return;
+    // Hidden background, no ripple, nothing displaced: the canvas stays empty until a click or a setting changes.
+    if (still && this.blank && this.tuning.density <= 0 && !this.displaced) return;
     this.draw(now);
   };
 
@@ -509,6 +520,7 @@ export class AsciiField {
     }
     const list = this.drawList;
     let listed = 0;
+    let drawn = 0;
     for (let row = 0; row < rows; row++) {
       const py = row * cellH;
       for (let col = 0; col < cols; col++) {
@@ -557,6 +569,7 @@ export class AsciiField {
           listed++;
           continue;
         }
+        drawn++;
         ctx.drawImage(
           atlas,
           this.glyphs[i] * spriteW,
@@ -571,6 +584,7 @@ export class AsciiField {
       }
     }
 
+    this.blank = drawn === 0 && listed === 0 && floor === 0;
     if (listed > 0) {
       // Lift these dots out of the pattern at home, then draw them where they are now.
       if (floor > 0) {

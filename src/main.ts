@@ -147,6 +147,8 @@ export default class CrispRipplePlugin extends Plugin {
   private dataWriteBlocked = false;
   private unloaded = false;
   private saveQueue: Promise<unknown> = Promise.resolve();
+  /** A queued save that has not started yet; later changes ride along with it. */
+  private pendingSave: Promise<boolean> | null = null;
   private saveErrorShown = false;
   private settingTab: RippleSettingTab | null = null;
   private readonly licenseController = new LicenseController({
@@ -235,8 +237,12 @@ export default class CrispRipplePlugin extends Plugin {
    * Resolves false (after one notice) when the write could not be confirmed.
    */
   saveSettings(): Promise<boolean> {
-    const snapshot = JSON.parse(JSON.stringify(this.rippleSettings)) as RippleSettings;
+    // A dragged slider fires many changes; one save that has not started yet covers them all.
+    if (this.pendingSave) return this.pendingSave;
     const operation = this.saveQueue.then(async () => {
+      this.pendingSave = null;
+      // Taken when the write starts, so it includes every change made while this save waited.
+      const snapshot = JSON.parse(JSON.stringify(this.rippleSettings)) as RippleSettings;
       if (this.unloaded || this.dataWriteBlocked) return false;
       await this.saveData(snapshot);
       try {
@@ -252,6 +258,7 @@ export default class CrispRipplePlugin extends Plugin {
         return false;
       }
     });
+    this.pendingSave = operation;
     this.saveQueue = operation.catch(() => false);
     return operation;
   }

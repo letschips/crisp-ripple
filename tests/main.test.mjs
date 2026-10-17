@@ -95,3 +95,22 @@ test("a layout-ready callback that runs after unload creates no canvas", async (
   assert.equal(plugin.ripples.size, 0);
   assert.equal(host.children.filter((c) => c.tag === "canvas").length, 0);
 });
+
+test("rapid setting changes coalesce into few writes and the last value is saved", async () => {
+  const { plugin } = await setup();
+  let stored = "{}";
+  let writes = 0;
+  plugin.saveData = async (data) => {
+    writes++;
+    stored = JSON.stringify(data);
+  };
+  plugin.app.vault.adapter.read = async () => stored;
+  const results = [];
+  for (let i = 0; i < 20; i++) {
+    plugin.options.speed = 50 + i * 5; // a slider being dragged
+    results.push(plugin.saveSettings());
+  }
+  assert.deepEqual(await Promise.all(results), Array(20).fill(true));
+  assert.ok(writes <= 2, `expected the pending saves to merge, got ${writes} writes`);
+  assert.equal(JSON.parse(stored).speed, 145);
+});
