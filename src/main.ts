@@ -380,6 +380,9 @@ class RippleSettingTab extends PluginSettingTab {
     const settings = this.plugin.options;
     const licensed = this.plugin.licensed;
 
+    const brandHeader = containerEl.createDiv({ cls: "crisp-brand-header" });
+    brandHeader.createEl("h2", { text: "Crisp Ripple" });
+    containerEl.createEl("p", { text: "点一下，泛起涟漪", cls: "crisp-brand-slogan" });
     this.renderLicense(containerEl);
 
     new Setting(containerEl).setName("背景").setHeading();
