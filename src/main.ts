@@ -4,6 +4,7 @@ import { parseColor } from "./color";
 import { AsciiField, FieldColors, FieldTuning } from "./field";
 import { discoverVaultCrispLicenses, verifyLicenseCode } from "./license";
 import { ActivationOutcome, LicenseController, LicenseResult } from "./license-controller";
+import { rippleEntitled } from "./entitlement";
 import {
   ColorMode,
   Shape,
@@ -162,6 +163,11 @@ class EmptyTabRipple {
   };
 }
 
+async function checkRippleLicense(code: string, online: boolean): Promise<LicenseResult> {
+  const result = await verifyLicenseCode(code, PLUGIN_ID, online ? undefined : { online: false });
+  return { valid: result.valid, payload: result.payload, reason: result.reason };
+}
+
 export default class CrispRipplePlugin extends Plugin {
   private ripples = new Map<View, EmptyTabRipple>();
   private rippleSettings: RippleSettings = normalizeSettings(undefined);
@@ -174,7 +180,8 @@ export default class CrispRipplePlugin extends Plugin {
   private saveErrorShown = false;
   private settingTab: RippleSettingTab | null = null;
   private readonly licenseController = new LicenseController({
-    verify: (code, online) => this.checkLicense(code, online),
+    // A module function, not a method: overriding a method on the plugin cannot feed it a fake result.
+    verify: checkRippleLicense,
     discover: () => discoverVaultCrispLicenses(this.app, PLUGIN_ID),
     getCode: () => this.rippleSettings.licenseCode,
     persistCode: async (code) => {
@@ -185,15 +192,16 @@ export default class CrispRipplePlugin extends Plugin {
       this.applyVisuals();
       this.settingTab?.display();
     },
-  });
+  }, this);
 
   /** Licence state as last verified; `licensed` also applies the expiry date at the moment of use. */
   get license(): LicenseResult {
     return this.licenseController.state;
   }
 
+  /** For display; gates call rippleEntitled(plugin). */
   get licensed(): boolean {
-    return this.licenseController.licensed;
+    return rippleEntitled(this);
   }
 
   // Never overwrite a data.json that could not be read and could not be backed up either,
@@ -219,7 +227,7 @@ export default class CrispRipplePlugin extends Plugin {
       id: "toggle-sound",
       name: "Toggle water-drop sound",
       callback: async () => {
-        if (!this.licensed) {
+        if (!rippleEntitled(this)) {
           new Notice("Crisp Ripple：水滴音效需要激活后使用");
           return;
         }
@@ -297,7 +305,7 @@ export default class CrispRipplePlugin extends Plugin {
   }
 
   previewDrop(): void {
-    if (!soundEnabled(this.rippleSettings, this.licensed)) return;
+    if (!soundEnabled(this.rippleSettings, rippleEntitled(this))) return;
     this.sound.play({ pan: 0, seed: Math.random(), volume: this.rippleSettings.volume / 100 });
   }
 
@@ -307,11 +315,6 @@ export default class CrispRipplePlugin extends Plugin {
 
   clearLicense(): Promise<boolean> {
     return this.licenseController.clear();
-  }
-
-  private async checkLicense(code: string, online: boolean): Promise<LicenseResult> {
-    const result = await verifyLicenseCode(code, PLUGIN_ID, online ? undefined : { online: false });
-    return { valid: result.valid, payload: result.payload, reason: result.reason };
   }
 
   // loadData() yields undefined when data.json exists but cannot be read; keep a copy before defaults take over.
@@ -327,10 +330,10 @@ export default class CrispRipplePlugin extends Plugin {
     }
   }
 
-  private visuals = (): VisualSettings => effectiveVisuals(this.rippleSettings, this.licensed);
+  private visuals = (): VisualSettings => effectiveVisuals(this.rippleSettings, rippleEntitled(this));
 
   private playDrop = (pan: number): void => {
-    if (!soundEnabled(this.rippleSettings, this.licensed)) return;
+    if (!soundEnabled(this.rippleSettings, rippleEntitled(this))) return;
     this.sound.play({ pan, seed: Math.random(), volume: this.rippleSettings.volume / 100 });
   };
 
@@ -378,7 +381,7 @@ class RippleSettingTab extends PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
     const settings = this.plugin.options;
-    const licensed = this.plugin.licensed;
+    const licensed = rippleEntitled(this.plugin);
 
     const brandHeader = containerEl.createDiv({ cls: "crisp-brand-header" });
     brandHeader.createEl("h2", { text: "Crisp Ripple" });
@@ -510,7 +513,7 @@ class RippleSettingTab extends PluginSettingTab {
     new Setting(containerEl).setName("软件授权与激活").setHeading();
     const license = this.plugin.license;
     const status = new Setting(containerEl).setName("激活状态");
-    if (this.plugin.licensed) {
+    if (rippleEntitled(this.plugin)) {
       const payload = license.payload;
       const user = payload?.userName || "Crisp 用户";
       const expiry = payload?.expiresAt ? `到期时间：${String(payload.expiresAt).split("T")[0]}` : "永久授权";
@@ -537,7 +540,7 @@ class RippleSettingTab extends PluginSettingTab {
       );
     }
 
-    if (this.plugin.licensed) return;
+    if (rippleEntitled(this.plugin)) return;
     new Setting(containerEl)
       .setName("授权码")
       .setDesc("支持 Crisp Suite 全家桶或单款授权码。启动时会自动继承库内其他 Crisp 插件的授权。")

@@ -1,6 +1,9 @@
 // Licence state machine, kept free of Obsidian imports so its ordering rules can be tested in Node.
 // Every user action and every background check takes a sequence number; a result that comes back
 // after a newer action (or after unload) is dropped instead of overwriting it.
+// Access itself is recorded per owner in ./entitlement; `state` only describes it for the UI.
+
+import { applyEntitlement, claimEntitlement, rippleEntitled } from "./entitlement";
 
 export interface LicensePayloadLike {
   userName?: string;
@@ -39,20 +42,33 @@ function expiryTime(payload?: LicensePayloadLike): number | null {
   return Number.isFinite(t) ? t : null;
 }
 
+// Deps and owner live outside the instance, so swapping a field cannot feed the gate a fake result.
+const INTERNALS = new WeakMap<LicenseController, { deps: LicenseDeps; owner: object | null }>();
+// A function, not a getter: an own property on the instance could shadow a getter.
+function depsOf(controller: LicenseController): LicenseDeps {
+  return INTERNALS.get(controller)!.deps;
+}
+
 export class LicenseController {
   state: LicenseResult = { valid: false };
   private sequence = 0;
   private disposed = false;
 
-  constructor(private readonly deps: LicenseDeps) {}
-
-  private now(): number {
-    return this.deps.now?.() ?? Date.now();
+  /** `owner` is what the gate is keyed by (the plugin); only the first controller for it counts. */
+  constructor(deps: LicenseDeps, owner?: object) {
+    const target = owner ?? this;
+    const claimed = claimEntitlement(target, this, () => deps.onChange());
+    INTERNALS.set(this, { deps, owner: claimed ? target : null });
   }
 
-  /** Valid and not past its expiry right now. */
+  private now(): number {
+    return depsOf(this).now?.() ?? Date.now();
+  }
+
+  /** Granted through the module gate and not past its expiry right now. */
   get licensed(): boolean {
-    if (!this.state.valid) return false;
+    const owner = INTERNALS.get(this)?.owner;
+    if (!owner || !rippleEntitled(owner) || !this.state.valid) return false;
     const expires = expiryTime(this.state.payload);
     return expires === null || this.now() <= expires;
   }
@@ -60,9 +76,9 @@ export class LicenseController {
   /** Startup: local signature only, so loading never waits on the network. */
   async loadLocal(): Promise<void> {
     const sequence = ++this.sequence;
-    const code = this.deps.getCode();
+    const code = depsOf(this).getCode();
     if (!code) return;
-    const result = await this.deps.verify(code, false);
+    const result = await depsOf(this).verify(code, false);
     if (this.stale(sequence)) return;
     this.set(result);
   }
@@ -74,20 +90,20 @@ export class LicenseController {
    */
   async refreshInBackground(): Promise<void> {
     const sequence = ++this.sequence;
-    const code = this.deps.getCode();
+    const code = depsOf(this).getCode();
     if (code) {
-      const result = await this.deps.verify(code, true);
+      const result = await depsOf(this).verify(code, true);
       if (this.stale(sequence)) return;
       this.set(result);
       if (result.valid) return;
     }
-    const candidates = (await this.deps.discover()).filter((candidate) => candidate !== code);
+    const candidates = (await depsOf(this).discover()).filter((candidate) => candidate !== code);
     for (const candidate of candidates) {
       if (this.stale(sequence)) return;
-      const result = await this.deps.verify(candidate, true);
+      const result = await depsOf(this).verify(candidate, true);
       if (this.stale(sequence)) return;
       if (!result.valid) continue;
-      await this.deps.persistCode(candidate);
+      await depsOf(this).persistCode(candidate);
       if (this.stale(sequence)) return;
       this.set(result);
       return;
@@ -97,10 +113,10 @@ export class LicenseController {
   async activate(code: string): Promise<ActivationOutcome> {
     const sequence = ++this.sequence;
     const trimmed = code.trim();
-    const result = await this.deps.verify(trimmed, true);
+    const result = await depsOf(this).verify(trimmed, true);
     if (this.stale(sequence)) return { result, applied: false, saved: false };
     if (!result.valid) return { result, applied: true, saved: false };
-    const saved = await this.deps.persistCode(trimmed);
+    const saved = await depsOf(this).persistCode(trimmed);
     if (this.stale(sequence)) return { result, applied: false, saved };
     this.set(result);
     return { result, applied: true, saved };
@@ -109,7 +125,7 @@ export class LicenseController {
   async clear(): Promise<boolean> {
     ++this.sequence;
     this.set({ valid: false });
-    return this.deps.persistCode("");
+    return depsOf(this).persistCode("");
   }
 
   /** Called periodically: turns a licence that expired while running into an explicit "expired" state. */
@@ -131,6 +147,8 @@ export class LicenseController {
 
   private set(result: LicenseResult): void {
     this.state = { valid: result.valid, payload: result.payload, reason: result.reason };
-    this.deps.onChange();
+    const owner = INTERNALS.get(this)?.owner;
+    // The owner's listener reports a change itself; only an unchanged gate needs a direct refresh.
+    if (!owner || !applyEntitlement(owner, this, result)) depsOf(this).onChange();
   }
 }

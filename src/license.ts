@@ -111,16 +111,38 @@ export function base64UrlToUint8Array(base64url: string): Uint8Array {
   return buffer;
 }
 
-function subtleCrypto(): SubtleCrypto | undefined {
-  const globalCrypto = (globalThis as { crypto?: { subtle?: SubtleCrypto } }).crypto;
-  if (globalCrypto?.subtle) return globalCrypto.subtle;
-  if (typeof window !== "undefined" && window.crypto?.subtle) return window.crypto.subtle;
-  return undefined;
+type CapturedSubtle = Pick<SubtleCrypto, "importKey" | "verify">;
+
+// WebCrypto is taken once at load: replacing crypto.subtle later does not reach the license check.
+const SUBTLE: CapturedSubtle | null = (() => {
+  try {
+    const globalCrypto = (globalThis as { crypto?: { subtle?: SubtleCrypto } }).crypto;
+    const subtle = globalCrypto?.subtle ?? (typeof window !== "undefined" ? window.crypto?.subtle : undefined);
+    return subtle ? Object.freeze({ importKey: subtle.importKey.bind(subtle), verify: subtle.verify.bind(subtle) }) : null;
+  } catch {
+    return null;
+  }
+})();
+
+let subtleCheck: Promise<boolean> | null = null;
+
+// A verifier that accepts an all-zero signature is not a real verifier; no license is trusted then.
+function subtleTrusted(): Promise<boolean> {
+  subtleCheck ??= (async () => {
+    if (!SUBTLE) return false;
+    try {
+      const key = await importEd25519PublicKey(CRISP_PUBLIC_KEY_PEM);
+      const accepted = await SUBTLE.verify("Ed25519", key, new Uint8Array(64), new TextEncoder().encode("crisp-ripple/self-test"));
+      return accepted === false;
+    } catch {
+      return false;
+    }
+  })();
+  return subtleCheck;
 }
 
 export async function importEd25519PublicKey(pem: string): Promise<CryptoKey> {
-  const subtle = subtleCrypto();
-  if (!subtle) throw new Error("WebCrypto 在当前运行环境不可用");
+  if (!SUBTLE) throw new Error("WebCrypto 在当前运行环境不可用");
   const pemContents = pem
     .replace("-----BEGIN PUBLIC KEY-----", "")
     .replace("-----END PUBLIC KEY-----", "")
@@ -130,7 +152,7 @@ export async function importEd25519PublicKey(pem: string): Promise<CryptoKey> {
     der.byteOffset,
     der.byteOffset + der.byteLength,
   ) as ArrayBuffer;
-  return await subtle.importKey(
+  return await SUBTLE.importKey(
     "spki",
     derArrayBuffer,
     { name: "Ed25519" },
@@ -227,20 +249,19 @@ export async function verifyLicenseCode(
       dataBytes.byteOffset + dataBytes.byteLength,
     ) as ArrayBuffer;
 
-    const publicKey = await importEd25519PublicKey(CRISP_PUBLIC_KEY_PEM);
-    const subtle = subtleCrypto();
-    if (!subtle) {
+    if (!SUBTLE || !(await subtleTrusted())) {
       return { valid: false, reason: "WebCrypto 在当前运行环境不可用" };
     }
+    const publicKey = await importEd25519PublicKey(CRISP_PUBLIC_KEY_PEM);
 
-    const isSignatureValid = await subtle.verify(
+    const isSignatureValid = await SUBTLE.verify(
       "Ed25519",
       publicKey,
       signatureArrayBuffer,
       dataArrayBuffer,
     );
 
-    if (!isSignatureValid) {
+    if (isSignatureValid !== true) {
       return { valid: false, reason: "授权签名无效或已被篡改" };
     }
 

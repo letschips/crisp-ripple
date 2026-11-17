@@ -204,3 +204,35 @@ test("clearing the licence while siblings are being checked one by one stops the
   assert.equal(h.stored, "");
   assert.ok(!h.calls.some((c) => c.code === "B"), "no further candidates after the user acted");
 });
+
+// ---- Hardening: the gate cannot be opened from the console ----
+
+test("writing state on the controller does not unlock it", () => {
+  const h = host();
+  h.controller.state = { valid: true, payload: { expiresAt: "2999-01-01T00:00:00.000Z" } };
+  assert.equal(h.controller.licensed, false);
+});
+
+test("replacing the controller's deps does not change what it verifies with", async () => {
+  const h = host();
+  h.controller.deps = { ...h.controller.deps, verify: async () => OK() };
+  const outcome = await h.controller.activate("FORGED");
+  assert.equal(outcome.result.valid, false);
+  assert.equal(h.controller.licensed, false);
+});
+
+test("a second controller built for the same owner cannot open that owner's gate", async () => {
+  const owner = {};
+  const real = new LicenseController({
+    verify: async () => ({ valid: false }), discover: async () => [], getCode: () => "",
+    persistCode: async () => true, onChange() {},
+  }, owner);
+  const Fake = real.constructor;
+  const fake = new Fake({
+    verify: async () => OK(), discover: async () => [], getCode: () => "FORGED",
+    persistCode: async () => true, onChange() {},
+  }, owner);
+  await fake.loadLocal();
+  assert.equal(real.licensed, false);
+  assert.equal(fake.licensed, false);
+});

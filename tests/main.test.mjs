@@ -13,8 +13,15 @@ import { buttons, notices } from "./fakes/obsidian.mjs";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const stub = path.join(root, "tests/fakes/obsidian.mjs");
 const outDir = mkdtempSync(path.join(tmpdir(), "ripple-main-"));
+// Test-only entry: the production bundle never exposes the gate.
 await esbuild.build({
-  entryPoints: [path.join(root, "src/main.ts")],
+  stdin: {
+    contents: [
+      `export { default } from ${JSON.stringify(path.join(root, "src/main.ts"))};`,
+      `export { applyEntitlement } from ${JSON.stringify(path.join(root, "src/entitlement.ts"))};`,
+    ].join("\n"),
+    resolveDir: root, loader: "ts",
+  },
   bundle: true,
   format: "esm",
   platform: "node",
@@ -23,7 +30,7 @@ await esbuild.build({
   // Shared with this file at runtime, so notices and buttons are the same arrays.
   plugins: [{ name: "obsidian-stub", setup: (b) => b.onResolve({ filter: /^obsidian$/ }, () => ({ path: pathToFileURL(stub).href, external: true })) }],
 });
-const { default: CrispRipplePlugin } = await import(pathToFileURL(path.join(outDir, "main.mjs")).href);
+const { default: CrispRipplePlugin, applyEntitlement } = await import(pathToFileURL(path.join(outDir, "main.mjs")).href);
 
 async function setup() {
   const main = fakeWindow();
@@ -66,7 +73,7 @@ test("an empty tab in a pop-out takes that window's theme variables", async () =
 
 test("clearing the licence says so when data.json could not be written", async () => {
   const { plugin } = await setup();
-  Object.defineProperty(plugin, "licensed", { get: () => true });
+  applyEntitlement(plugin, plugin.licenseController, { valid: true });
   plugin.clearLicense = async () => false;
   notices.length = 0;
   buttons.length = 0;
@@ -75,6 +82,14 @@ test("clearing the licence says so when data.json could not be written", async (
   await clear.click();
   assert.ok(!notices.includes("已清除授权信息"), `got: ${notices.join(" | ")}`);
   assert.ok(notices.some((n) => n.includes("重启")), "must warn that the licence comes back after a restart");
+});
+
+test("an own licensed property on the plugin does not unlock the appearance settings", async () => {
+  const { plugin } = await setup();
+  Object.defineProperty(plugin, "licensed", { get: () => true });
+  buttons.length = 0;
+  plugin.settingTab.display();
+  assert.equal(buttons.find((b) => b.text === "清除授权"), undefined);
 });
 
 test("a layout-ready callback that runs after unload creates no canvas", async () => {

@@ -169,3 +169,44 @@ test("inheritance scan returns every locally valid sibling code in order", async
   const found = await discoverVaultCrispLicenses(app, "crisp-ripple");
   assert.deepEqual(found, [CODE, B], "duplicates, invalid codes and the plugin's own data are skipped");
 });
+
+// ---- WebCrypto tampering (hardening) ----
+// The verifier must be taken once at load and checked against an all-zero signature, so a
+// console patch of crypto.subtle cannot make a forged code pass.
+
+const realCrypto = Object.getOwnPropertyDescriptor(globalThis, "crypto");
+const realSubtle = globalThis.crypto.subtle;
+let copy = 0;
+/** Loads a fresh copy of the verifier while `crypto` is the given object. */
+async function loadWithCrypto(cryptoObject) {
+  Object.defineProperty(globalThis, "crypto", { value: cryptoObject, configurable: true, writable: true });
+  try {
+    return await import(`${pathToFileURL(path.join(outDir, "license.mjs")).href}?copy=${++copy}`);
+  } finally {
+    Object.defineProperty(globalThis, "crypto", realCrypto);
+  }
+}
+const forged = () => {
+  const payload = b64url(JSON.stringify({ product: "Crisp Suite", licenseId: "F", userName: "x", expiresAt: "2999-01-01T00:00:00.000Z", features: ["all"] }));
+  return `${payload}.${b64url(new Uint8Array(64))}`;
+};
+
+test("replacing crypto.subtle.verify after load cannot pass a forged code", async () => {
+  const subtle = { importKey: realSubtle.importKey.bind(realSubtle), verify: realSubtle.verify.bind(realSubtle) };
+  const lib = await loadWithCrypto({ subtle });
+  assert.equal((await lib.verifyLicenseCode(CODE, "crisp-ripple", env({ online: false }))).valid, true);
+  subtle.verify = async () => true;
+  Object.defineProperty(globalThis, "crypto", { value: { subtle }, configurable: true, writable: true });
+  try {
+    assert.equal((await lib.verifyLicenseCode(forged(), "crisp-ripple", env({ online: false }))).valid, false);
+  } finally {
+    Object.defineProperty(globalThis, "crypto", realCrypto);
+  }
+});
+
+test("a verifier that accepts everything at load is not trusted, so no code passes", async () => {
+  const subtle = { importKey: realSubtle.importKey.bind(realSubtle), verify: async () => true };
+  const lib = await loadWithCrypto({ subtle });
+  assert.equal((await lib.verifyLicenseCode(forged(), "crisp-ripple", env({ online: false }))).valid, false);
+  assert.equal((await lib.verifyLicenseCode(CODE, "crisp-ripple", env({ online: false }))).valid, false);
+});
