@@ -304,9 +304,14 @@ export default class CrispRipplePlugin extends Plugin {
     this.applyVisuals();
   }
 
+  /** The contour scene drops a stone; the character and dot scenes keep the water drop. */
+  private soundKind(): "drop" | "stone" {
+    return this.visuals().shape === "contour" ? "stone" : "drop";
+  }
+
   previewDrop(): void {
     if (!soundEnabled(this.rippleSettings, rippleEntitled(this))) return;
-    this.sound.play({ pan: 0, seed: Math.random(), volume: this.rippleSettings.volume / 100 });
+    this.sound.play({ pan: 0, seed: Math.random(), volume: this.rippleSettings.volume / 100, kind: this.soundKind() });
   }
 
   activate(code: string): Promise<ActivationOutcome> {
@@ -334,7 +339,7 @@ export default class CrispRipplePlugin extends Plugin {
 
   private playDrop = (pan: number): void => {
     if (!soundEnabled(this.rippleSettings, rippleEntitled(this))) return;
-    this.sound.play({ pan, seed: Math.random(), volume: this.rippleSettings.volume / 100 });
+    this.sound.play({ pan, seed: Math.random(), volume: this.rippleSettings.volume / 100, kind: this.soundKind() });
   };
 
   /** Shows or removes the field on every empty tab; not tied to the licence. */
@@ -450,12 +455,13 @@ class RippleSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("形态")
-      .setDesc("背景由字符组成，或由圆点组成。")
+      .setDesc("背景由字符、圆点或等高线组成。")
       .setDisabled(!licensed)
       .addDropdown((dropdown) =>
         dropdown
           .addOption("glyph", "字符")
           .addOption("dot", "圆点")
+          .addOption("contour", "等高线")
           .setValue(licensed ? settings.shape : DEFAULT_VISUALS.shape)
           .setDisabled(!licensed)
           .onChange(async (value) => {

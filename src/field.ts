@@ -1,3 +1,5 @@
+import { traceContours } from "./contour";
+
 // ASCII field renderer: a character (or dot) grid whose per-cell opacity is
 // driven by a slowly drifting noise field plus expanding click ripples.
 // Each cell also sits on a damped spring: the pointer and the click shockwave
@@ -27,7 +29,18 @@ const MAX_STEP = 1 / 120; // integration step, s
 // The drift noise has features ~200 px wide, so it is sampled on a ~30 px lattice and interpolated per cell.
 const NOISE_STEP_PX = 28;
 
-export type FieldShape = "glyph" | "dot";
+// Contour scene: height samples this far apart (CSS px), traced into iso-lines.
+const CONTOUR_STEP = 14;
+const CONTOUR_SCALE = 0.0026; // noise units per CSS px: hills a few hundred px across
+const CONTOUR_GAP = 0.05; // height between lines at density 100%
+const HILL_LIFE = 3.4; // seconds a click hill takes to rise and settle
+const HILL_RISE = 0.25; // rise time constant, s
+const HILL_HEIGHT = 0.3;
+const DIP_DEPTH = 0.14; // the pointer presses the terrain down this much at push 100%
+const DIP_SIGMA = 70; // px
+const DIP_EASE = 0.18; // s, how fast the dip follows the pointer and fades in and out
+
+export type FieldShape = "glyph" | "dot" | "contour";
 
 export interface Rgb {
   r: number;
@@ -139,6 +152,11 @@ export class AsciiField {
   // Drift noise on a coarse lattice: noise value and warp (wx + wy) per lattice point.
   private latN = new Float32Array(0);
   private latW = new Float32Array(0);
+  // Contour scene: height lattice, and the eased pointer dip.
+  private heights = new Float32Array(0);
+  private dipX = 0;
+  private dipY = 0;
+  private dipAmt = 0;
 
   constructor(
     private readonly canvas: HTMLCanvasElement,
@@ -246,7 +264,10 @@ export class AsciiField {
     this.canvas.width = Math.max(1, Math.round(width * dpr));
     this.canvas.height = Math.max(1, Math.round(height * dpr));
     this.ctx.font = this.font;
-    if (this.shape === "dot") {
+    if (this.shape === "contour") {
+      this.cellW = CONTOUR_STEP;
+      this.cellH = CONTOUR_STEP;
+    } else if (this.shape === "dot") {
       // A whole number of device pixels per cell keeps the pattern fill on the same grid as the sprites.
       this.cellW = Math.max(1, Math.round(DOT_CELL * dpr)) / dpr;
       this.cellH = this.cellW;
@@ -321,7 +342,7 @@ export class AsciiField {
 
   /** Drops ripples past their lifetime at the current speed; every draw goes through here. */
   private pruneRipples(now: number): void {
-    const life = RIPPLE_LIFE / this.tuning.speed;
+    const life = (this.shape === "contour" ? HILL_LIFE : RIPPLE_LIFE) / this.tuning.speed;
     this.ripples = this.ripples.filter((r) => (now - r.start) / 1000 < life);
   }
 
@@ -331,6 +352,7 @@ export class AsciiField {
     this.spriteH = Math.ceil(this.cellH * this.dpr);
     const dot = this.shape === "dot";
     this.buildDotTile(dot);
+    if (this.shape === "contour") return; // lines are stroked directly, no sprites
     this.atlas.width = this.spriteW * (dot ? 1 : GLYPHS.length);
     this.atlas.height = this.spriteH * BUCKETS;
     const ctx = this.atlas.getContext("2d");
@@ -418,6 +440,10 @@ export class AsciiField {
   private simulate(now: number): void {
     const dt = Math.min(0.05, Math.max(0, (now - this.lastSim) / 1000));
     this.lastSim = now;
+    if (this.shape === "contour") {
+      this.easeDip(dt);
+      return;
+    }
     const push = this.tuning.push;
     if (this.reducedMotion || push <= 0) {
       if (this.displaced) this.resetSprings();
@@ -519,6 +545,126 @@ export class AsciiField {
     this.moving = moving;
   }
 
+  /** Contour scene: the pointer dip follows the pointer with a short lag and fades in and out. */
+  private easeDip(dt: number): void {
+    const target = this.pointer && this.pushActive ? 1 : 0;
+    if (dt === 0) {
+      this.moving = target !== this.dipAmt;
+      return;
+    }
+    const k = 1 - Math.exp(-dt / DIP_EASE);
+    if (this.pointer) {
+      if (this.dipAmt < 0.01) {
+        this.dipX = this.pointer.x;
+        this.dipY = this.pointer.y;
+      } else {
+        this.dipX += (this.pointer.x - this.dipX) * k;
+        this.dipY += (this.pointer.y - this.dipY) * k;
+      }
+    }
+    this.dipAmt += (target - this.dipAmt) * k;
+    if (Math.abs(target - this.dipAmt) < 0.004) this.dipAmt = target;
+    const lag = this.pointer ? Math.abs(this.pointer.x - this.dipX) + Math.abs(this.pointer.y - this.dipY) : 0;
+    this.moving = this.dipAmt !== target || (this.dipAmt > 0 && lag > 0.5);
+    this.displaced = this.dipAmt > 0;
+  }
+
+  /** Height of each lattice point: drifting two-octave noise, plus click hills and the pointer dip. */
+  private sampleHeights(now: number, drift: number, lx: number, ly: number): void {
+    if (this.heights.length < lx * ly) this.heights = new Float32Array(lx * ly);
+    const { heights } = this;
+    const { speed, strength, push } = this.tuning;
+    const hills = this.ripples.map((rp) => {
+      const age = ((now - rp.start) / 1000) * speed;
+      const env = (1 - Math.exp(-age / HILL_RISE)) * Math.pow(Math.max(0, 1 - age / HILL_LIFE), 1.5);
+      const sigma = 55 + 45 * Math.min(1, age / 1.2);
+      return { x: rp.x, y: rp.y, amp: HILL_HEIGHT * strength * env, s2: 2 * sigma * sigma, reach2: (3 * sigma) ** 2 };
+    });
+    const dipAmp = -DIP_DEPTH * push * this.dipAmt;
+    const dipReach2 = (3 * DIP_SIGMA) ** 2;
+    const dipS2 = 2 * DIP_SIGMA * DIP_SIGMA;
+    for (let j = 0; j < ly; j++) {
+      const y = j * CONTOUR_STEP;
+      const ny = y * CONTOUR_SCALE;
+      for (let i = 0; i < lx; i++) {
+        const x = i * CONTOUR_STEP;
+        const nx = x * CONTOUR_SCALE;
+        const wx = noise(nx * 0.6 + drift * 0.012, ny * 0.6) - 0.5;
+        const wy = noise(nx * 0.6 + 17.3, ny * 0.6 - drift * 0.01) - 0.5;
+        const ux = nx + wx * 1.6 + drift * 0.015;
+        const uy = ny + wy * 1.6 - drift * 0.008;
+        let v = noise(ux, uy) * 0.72 + noise(ux * 2.1 + 5.2, uy * 2.1 - 3.7) * 0.28;
+        for (const hl of hills) {
+          const d2 = (x - hl.x) ** 2 + (y - hl.y) ** 2;
+          if (d2 < hl.reach2) v += hl.amp * Math.exp(-d2 / hl.s2);
+        }
+        if (dipAmp !== 0) {
+          const d2 = (x - this.dipX) ** 2 + (y - this.dipY) ** 2;
+          if (d2 < dipReach2) v += dipAmp * Math.exp(-d2 / dipS2);
+        }
+        heights[j * lx + i] = v;
+      }
+    }
+  }
+
+  /** Contour scene: every line in the base colour, then the same lines re-stroked in the accent near hills and the pointer. */
+  private drawContours(now: number): void {
+    const { ctx, dpr } = this;
+    const density = this.tuning.density;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+    if (density <= 0 || typeof Path2D !== "function") {
+      this.blank = true;
+      return;
+    }
+    const lx = Math.ceil(this.width / CONTOUR_STEP) + 1;
+    const ly = Math.ceil(this.height / CONTOUR_STEP) + 1;
+    const drift = this.reducedMotion ? 0 : (now - this.epoch) / 1000;
+    this.sampleHeights(now, drift, lx, ly);
+    const minor = new Path2D();
+    const major = new Path2D();
+    const segments = traceContours(this.heights, lx, ly, CONTOUR_STEP, 0, CONTOUR_GAP / density, { minor, major });
+    this.blank = segments === 0;
+    if (this.blank) return;
+    const { base, accent } = this.colors;
+    const rgba = (c: Rgb, a: number): string => `rgba(${c.r},${c.g},${c.b},${a.toFixed(3)})`;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = rgba(base, 0.13);
+    ctx.stroke(minor);
+    ctx.lineWidth = 1.3;
+    ctx.strokeStyle = rgba(base, 0.24);
+    ctx.stroke(major);
+
+    // Accent glow: each hill (and the pointer dip) re-strokes the lines inside its reach with a radial fade.
+    const { speed, strength } = this.tuning;
+    const glows: { x: number; y: number; r: number; a: number }[] = [];
+    for (const rp of this.ripples) {
+      const age = ((now - rp.start) / 1000) * speed;
+      const env = (1 - Math.exp(-age / HILL_RISE)) * Math.pow(Math.max(0, 1 - age / HILL_LIFE), 1.2);
+      if (env > 0.01) glows.push({ x: rp.x, y: rp.y, r: 150 + 90 * Math.min(1, age / 1.2), a: env });
+    }
+    if (this.dipAmt > 0.01 && this.tuning.push > 0) glows.push({ x: this.dipX, y: this.dipY, r: 150, a: this.dipAmt * 0.7 });
+    const peak = Math.min(0.85, 0.5 * strength);
+    for (const g of glows) {
+      const grad = ctx.createRadialGradient(g.x, g.y, 0, g.x, g.y, g.r);
+      grad.addColorStop(0, rgba(accent, peak * g.a));
+      grad.addColorStop(0.55, rgba(accent, peak * g.a * 0.55));
+      grad.addColorStop(1, rgba(accent, 0));
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(g.x - g.r, g.y - g.r, g.r * 2, g.r * 2);
+      ctx.clip();
+      ctx.strokeStyle = grad;
+      ctx.lineWidth = 1.4;
+      ctx.stroke(minor);
+      ctx.stroke(major);
+      ctx.restore();
+    }
+  }
+
   /** Samples the drifting noise on a coarse lattice; draw() interpolates it per cell. */
   private sampleNoise(drift: number, sx: number, sy: number, lx: number, ly: number): void {
     if (this.latN.length < lx * ly) {
@@ -578,6 +724,10 @@ export class AsciiField {
     this.lastDraw = now;
     this.pruneRipples(now);
     this.simulate(now);
+    if (this.shape === "contour") {
+      this.drawContours(now);
+      return;
+    }
     const { ctx, cols, rows, cellW, cellH, spriteW, spriteH, dpr, atlas, offX, offY } = this;
     const dot = this.shape === "dot";
     const displaced = this.displaced;

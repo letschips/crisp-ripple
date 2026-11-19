@@ -2,6 +2,8 @@
 // Web Audio nodes. A drop is a sine "bubble" whose pitch rises quickly
 // (that upward chirp is what makes it read as water), a smaller secondary
 // droplet just after, and a soft diffuse tail for the spreading ripple.
+// The contour scene uses a "stone" instead: a low thump whose pitch falls, with a
+// short muffled grit, like a pebble set down on soft ground.
 
 const MASTER_GAIN = 0.14;
 const TAIL_SECONDS = 1.4;
@@ -27,6 +29,39 @@ function bubble(
   osc.stop(at + decay + 0.02);
 }
 
+/** A sine whose pitch falls: the falling pitch is what reads as weight rather than water. */
+function thump(ctx: BaseAudioContext, out: AudioNode, at: number, freq: number, level: number, decay: number): void {
+  const osc = ctx.createOscillator();
+  const gain = ctx.createGain();
+  osc.type = "sine";
+  osc.frequency.setValueAtTime(freq, at);
+  osc.frequency.exponentialRampToValueAtTime(freq * 0.55, at + decay);
+  gain.gain.setValueAtTime(0.0001, at);
+  gain.gain.exponentialRampToValueAtTime(level, at + 0.006);
+  gain.gain.exponentialRampToValueAtTime(0.0001, at + decay);
+  osc.connect(gain).connect(out);
+  osc.start(at);
+  osc.stop(at + decay + 0.02);
+}
+
+/** A few tens of ms of low-passed noise: the grit of the stone touching down. */
+function grit(ctx: BaseAudioContext, out: AudioNode, at: number, level: number, seed: number): void {
+  const seconds = 0.07;
+  const buffer = ctx.createBuffer(1, Math.floor(ctx.sampleRate * seconds), ctx.sampleRate);
+  const data = buffer.getChannelData(0);
+  for (let i = 0; i < data.length; i++) data[i] = (Math.random() * 2 - 1) * Math.exp((-i / data.length) * 5);
+  const src = ctx.createBufferSource();
+  src.buffer = buffer;
+  const filter = ctx.createBiquadFilter();
+  filter.type = "lowpass";
+  filter.frequency.value = 700 + seed * 400;
+  const gain = ctx.createGain();
+  gain.gain.value = level;
+  src.connect(filter).connect(gain).connect(out);
+  src.start(at);
+  src.stop(at + seconds);
+}
+
 function buildTailImpulse(ctx: BaseAudioContext): AudioBuffer {
   const length = Math.floor(ctx.sampleRate * TAIL_SECONDS);
   const buffer = ctx.createBuffer(2, length, ctx.sampleRate);
@@ -50,6 +85,8 @@ export interface DropOptions {
   seed: number;
   /** 0 … 1 multiplier on the default level */
   volume: number;
+  /** water drop for the ripple scenes, stone for the contour scene */
+  kind?: "drop" | "stone";
 }
 
 /** Schedules one drop on any context; shared by live playback and offline checks. */
@@ -58,7 +95,7 @@ export function scheduleDrop(
   destination: AudioNode,
   tail: AudioBuffer,
   at: number,
-  { pan, seed, volume }: DropOptions,
+  { pan, seed, volume, kind = "drop" }: DropOptions,
 ): AudioNode {
   const master = ctx.createGain();
   master.gain.value = MASTER_GAIN * Math.max(0, Math.min(1, volume));
@@ -69,12 +106,19 @@ export function scheduleDrop(
   const reverb = ctx.createConvolver();
   reverb.buffer = tail;
   const wet = ctx.createGain();
-  wet.gain.value = 0.35;
+  wet.gain.value = kind === "stone" ? 0.18 : 0.35;
 
   dry.connect(panner);
   dry.connect(reverb).connect(wet).connect(panner);
   panner.connect(master).connect(destination);
 
+  if (kind === "stone") {
+    // Starts near 200 Hz so laptop speakers still carry it; low notes sound quieter, so it runs a little hotter than the drop.
+    const base = 190 + seed * 50;
+    thump(ctx, dry, at, base, 1.05, 0.2);
+    grit(ctx, dry, at, 0.35, seed);
+    return master;
+  }
   const base = 420 + seed * 220;
   bubble(ctx, dry, at, base, 0.9, 0.11);
   bubble(ctx, dry, at + 0.09 + seed * 0.05, base * 1.7, 0.3, 0.07);

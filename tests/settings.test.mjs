@@ -76,6 +76,7 @@ test("shape and push are licensed appearance settings with safe fallbacks", () =
   assert.equal(s.push, 0, "0% push turns displacement off and must survive");
   assert.deepEqual(effectiveVisuals(s, false), DEFAULT_VISUALS);
   assert.equal(effectiveVisuals(s, true).shape, "dot");
+  assert.equal(normalizeSettings({ shape: "contour" }).shape, "contour");
   const bad = normalizeSettings({ shape: "star", push: 500 });
   assert.equal(bad.shape, "glyph");
   assert.equal(bad.push, 200);
