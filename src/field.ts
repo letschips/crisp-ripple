@@ -1,5 +1,6 @@
 import { traceContours } from "./contour";
 import { Swarm, fireflyCount } from "./firefly";
+import { ERASE_CELL, Garden, rakeGap } from "./zen";
 
 // ASCII field renderer: a character (or dot) grid whose per-cell opacity is
 // driven by a slowly drifting noise field plus expanding click ripples.
@@ -45,7 +46,12 @@ const DIP_EASE = 0.18; // s, how fast the dip follows the pointer and fades in a
 const GLOW_PX = 30; // CSS px across one firefly's glow sprite
 const FIREFLY_FRAME_MS = 33; // a swarm in motion needs ~30 fps even when idle
 
-export type FieldShape = "glyph" | "dot" | "contour" | "firefly";
+// Sand garden scene.
+const RING_STEP = 6; // CSS px between ring-field samples
+const GARDEN_IDLE_MS = 250; // furrows fill in over minutes; 4 fps is plenty
+const GRAIN_TILE = 96; // CSS px
+
+export type FieldShape = "glyph" | "dot" | "contour" | "firefly" | "zen";
 
 export interface Rgb {
   r: number;
@@ -74,6 +80,8 @@ interface Ripple {
   x: number;
   y: number;
   start: number;
+  /** the firefly and sand garden scenes act on each click once */
+  handled?: boolean;
 }
 
 function hash(x: number, y: number): number {
@@ -162,10 +170,16 @@ export class AsciiField {
   private dipX = 0;
   private dipY = 0;
   private dipAmt = 0;
-  // Firefly scene: the swarm, its glow sprite, and the newest click already turned into a scatter.
+  // Firefly scene: the swarm and its glow sprite.
   private readonly swarm = new Swarm();
   private readonly glow = document.createElement("canvas");
-  private scatteredUpTo = 0;
+  // Sand garden scene: the garden, its raked lines cached until stones or size change, and the sand grain.
+  private readonly garden = new Garden();
+  private readonly lines = document.createElement("canvas");
+  private readonly grainTile = document.createElement("canvas");
+  private grain: CanvasPattern | null = null;
+  private ringField = new Float32Array(0);
+  private linesKey = "";
 
   constructor(
     private readonly canvas: HTMLCanvasElement,
@@ -224,6 +238,7 @@ export class AsciiField {
   setTuning(tuning: FieldTuning): void {
     this.tuning = { ...tuning };
     if (this.shape === "firefly") this.fitSwarm();
+    if (this.shape === "zen") this.garden.dirty = true;
     if (this.width > 0) this.draw(this.now());
   }
 
@@ -274,7 +289,11 @@ export class AsciiField {
     this.canvas.width = Math.max(1, Math.round(width * dpr));
     this.canvas.height = Math.max(1, Math.round(height * dpr));
     this.ctx.font = this.font;
-    if (this.shape === "firefly") {
+    if (this.shape === "zen") {
+      this.cellW = ERASE_CELL;
+      this.cellH = ERASE_CELL;
+      this.garden.resize(width, height);
+    } else if (this.shape === "firefly") {
       this.cellW = GLOW_PX;
       this.cellH = GLOW_PX;
       this.fitSwarm();
@@ -344,6 +363,14 @@ export class AsciiField {
     if (this.windowDpr() !== this.dpr) this.resize(this.width, this.height);
     this.pruneRipples(now);
     const still = this.ripples.length === 0 && !this.moving;
+    if (this.shape === "zen" && still) {
+      // Sand does not drift: with no furrow filling in there is nothing to redraw, so let the window idle.
+      if (!this.garden.eraseActive) {
+        this.stop();
+        return;
+      }
+      if (now - this.lastDraw < GARDEN_IDLE_MS) return;
+    }
     if (still && now - this.lastDraw < (this.shape === "firefly" ? FIREFLY_FRAME_MS : IDLE_FRAME_MS)) return;
     // Hidden background, no ripple, nothing displaced: the canvas stays empty until a click or a setting changes.
     // Release the frame loop too, so the window can go idle; a click, a pointer push or a resize starts it again.
@@ -369,6 +396,11 @@ export class AsciiField {
     if (this.shape === "contour") return; // lines are stroked directly, no sprites
     if (this.shape === "firefly") {
       this.buildGlow();
+      return;
+    }
+    if (this.shape === "zen") {
+      this.buildGrain();
+      this.garden.dirty = true;
       return;
     }
     this.atlas.width = this.spriteW * (dot ? 1 : GLYPHS.length);
@@ -464,6 +496,10 @@ export class AsciiField {
     }
     if (this.shape === "firefly") {
       this.stepSwarm(dt);
+      return;
+    }
+    if (this.shape === "zen") {
+      this.stepGarden(dt);
       return;
     }
     const push = this.tuning.push;
@@ -567,6 +603,183 @@ export class AsciiField {
     this.moving = moving;
   }
 
+  /** Sand garden scene: faint specks of grain under the lines. */
+  private buildGrain(): void {
+    this.grain = null;
+    const size = Math.round(GRAIN_TILE * this.dpr);
+    this.grainTile.width = size;
+    this.grainTile.height = size;
+    const g = this.grainTile.getContext("2d");
+    if (!g) return;
+    const { base } = this.colors;
+    g.clearRect(0, 0, size, size);
+    const px = Math.max(1, Math.round(this.dpr));
+    for (let i = 0; i < 420; i++) {
+      // Fixed specks per tile, so the sand does not shimmer when the tile is rebuilt.
+      const a = 0.03 + 0.06 * hash(i, 7);
+      g.fillStyle = `rgba(${base.r},${base.g},${base.b},${a.toFixed(3)})`;
+      g.fillRect(Math.floor(hash(i, 1) * size), Math.floor(hash(i, 2) * size), px, px);
+    }
+    this.grain = this.ctx.createPattern(this.grainTile, "repeat") ?? null;
+  }
+
+  /** Sand garden scene: each new click sets a stone down or lifts one out; the pointer draws furrows. */
+  private stepGarden(dt: number): void {
+    if (this.reducedMotion) {
+      this.moving = false;
+      return;
+    }
+    for (const rp of this.ripples) {
+      if (rp.handled) continue;
+      rp.handled = true;
+      this.garden.click(rp.x, rp.y);
+    }
+    const busy = this.garden.step(dt, this.pushActive ? this.pointer : null, this.tuning.push, this.tuning.speed);
+    this.moving = busy;
+  }
+
+  /** Raked lines and stone rings, drawn once into an offscreen canvas until stones, size or colours change. */
+  private rakeLines(gap: number): void {
+    const { dpr, garden } = this;
+    const key = `${this.canvas.width}x${this.canvas.height}|${dpr}|${gap}|${this.tuning.strength}|${this.colors.base.r},${this.colors.base.g},${this.colors.base.b}`;
+    if (!garden.dirty && key === this.linesKey) return;
+    garden.dirty = false;
+    this.linesKey = key;
+    this.lines.width = this.canvas.width;
+    this.lines.height = this.canvas.height;
+    const g = this.lines.getContext("2d");
+    if (!g) return;
+    const { base } = this.colors;
+    g.setTransform(dpr, 0, 0, dpr, 0, 0);
+    g.clearRect(0, 0, this.width, this.height);
+    g.strokeStyle = `rgba(${base.r},${base.g},${base.b},${Math.min(0.5, 0.17 * this.tuning.strength).toFixed(3)})`;
+    g.lineWidth = 1;
+    g.lineCap = "round";
+    const straight = new Path2D();
+    for (let y = gap / 2; y < this.height; y += gap) {
+      straight.moveTo(0, y);
+      straight.lineTo(this.width, y);
+    }
+    g.stroke(straight);
+    const live = garden.stones.filter((st) => st.grow > 0);
+    if (live.length === 0) return;
+    // The straight lines stop where each stone's rings begin.
+    g.globalCompositeOperation = "destination-out";
+    g.beginPath();
+    for (const st of live) {
+      const z = garden.zone(st, gap);
+      g.moveTo(st.x + z, st.y);
+      g.arc(st.x, st.y, z, 0, Math.PI * 2);
+    }
+    g.fillStyle = "#000";
+    g.fill();
+    g.globalCompositeOperation = "source-over";
+    // Rings: iso-lines of the distance to the stones, only over the area they can reach.
+    let x0 = Infinity;
+    let y0 = Infinity;
+    let x1 = -Infinity;
+    let y1 = -Infinity;
+    for (const st of live) {
+      const z = garden.zone(st, gap) + RING_STEP;
+      x0 = Math.min(x0, st.x - z);
+      y0 = Math.min(y0, st.y - z);
+      x1 = Math.max(x1, st.x + z);
+      y1 = Math.max(y1, st.y + z);
+    }
+    x0 = Math.floor(x0 / RING_STEP) * RING_STEP;
+    y0 = Math.floor(y0 / RING_STEP) * RING_STEP;
+    const lx = Math.ceil((x1 - x0) / RING_STEP) + 1;
+    const ly = Math.ceil((y1 - y0) / RING_STEP) + 1;
+    if (this.ringField.length < lx * ly) this.ringField = new Float32Array(lx * ly);
+    garden.ringField(x0, y0, lx, ly, RING_STEP, gap, this.ringField);
+    const rings = new Path2D();
+    traceContours(this.ringField, lx, ly, RING_STEP, 0.6 * gap, gap, { minor: rings, major: rings });
+    g.translate(x0, y0);
+    g.stroke(rings);
+  }
+
+  private drawGarden(): void {
+    const { ctx, dpr, garden } = this;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+    const density = this.tuning.density;
+    if (density <= 0 || typeof Path2D !== "function") {
+      this.blank = true;
+      return;
+    }
+    this.blank = false;
+    this.rakeLines(rakeGap(density));
+    ctx.drawImage(this.lines, 0, 0);
+    if (garden.eraseActive) this.smoothFurrows();
+    if (this.grain) {
+      // Grain goes under the lines, and stays visible in the furrows.
+      ctx.globalCompositeOperation = "destination-over";
+      ctx.fillStyle = this.grain;
+      ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+      ctx.globalCompositeOperation = "source-over";
+    }
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    for (const st of garden.stones) this.drawStone(st);
+  }
+
+  /** Wipes the raked lines out where the pointer has dragged through, deepest where it passed last. */
+  private smoothFurrows(): void {
+    const { garden, ctx, dpr } = this;
+    if (this.mask.width !== garden.ex || this.mask.height !== garden.ey) {
+      this.mask.width = garden.ex;
+      this.mask.height = garden.ey;
+      this.maskData = null;
+    }
+    const mctx = this.mask.getContext("2d");
+    if (!mctx) return;
+    const data = (this.maskData ??= mctx.createImageData(garden.ex, garden.ey));
+    const px = data.data;
+    for (let k = 0; k < garden.erase.length; k++) px[k * 4 + 3] = Math.round(garden.erase[k] * 255);
+    mctx.putImageData(data, 0, 0);
+    // Cell (c, r) is sampled at (c, r)·ERASE_CELL; a pixel's centre maps to the cell's centre after scaling.
+    const s = ERASE_CELL * dpr;
+    ctx.globalCompositeOperation = "destination-out";
+    ctx.imageSmoothingEnabled = true;
+    ctx.drawImage(this.mask, -s / 2, -s / 2, garden.ex * s, garden.ey * s);
+    ctx.globalCompositeOperation = "source-over";
+  }
+
+  /** A rounded, slightly irregular stone; it sinks away as it is lifted out. */
+  private drawStone(st: { x: number; y: number; r: number; grow: number; dir: number; seed: number }): void {
+    const { ctx } = this;
+    const { base } = this.colors;
+    const fade = st.dir === -1 ? st.grow : 1;
+    if (fade <= 0) return;
+    const n = 12;
+    const pts: [number, number][] = [];
+    for (let k = 0; k < n; k++) {
+      const a = (k / n) * Math.PI * 2 + hash(st.seed, 99) * Math.PI;
+      const rr = st.r * (0.86 + 0.2 * hash(st.seed, k)) * (st.dir === -1 ? 0.6 + 0.4 * st.grow : 1);
+      // A little wider than tall, like a stone lying flat.
+      pts.push([st.x + Math.cos(a) * rr * 1.12, st.y + Math.sin(a) * rr * 0.9]);
+    }
+    const path = new Path2D();
+    const mid = (i: number): [number, number] => {
+      const p = pts[i % n];
+      const q = pts[(i + 1) % n];
+      return [(p[0] + q[0]) / 2, (p[1] + q[1]) / 2];
+    };
+    const m0 = mid(0);
+    path.moveTo(m0[0], m0[1]);
+    for (let k = 1; k <= n; k++) {
+      const p = pts[k % n];
+      const m = mid(k);
+      path.quadraticCurveTo(p[0], p[1], m[0], m[1]);
+    }
+    path.closePath();
+    const strength = Math.min(1.5, this.tuning.strength);
+    ctx.fillStyle = `rgba(${base.r},${base.g},${base.b},${(0.22 * strength * fade).toFixed(3)})`;
+    ctx.fill(path);
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = `rgba(${base.r},${base.g},${base.b},${(0.35 * strength * fade).toFixed(3)})`;
+    ctx.stroke(path);
+  }
+
   /** Firefly scene: as many fireflies as the area and density call for; existing ones stay put. */
   private fitSwarm(): void {
     this.swarm.resize(this.width, this.height, fireflyCount(this.width, this.height, this.tuning.density));
@@ -595,8 +808,8 @@ export class AsciiField {
   private stepSwarm(dt: number): void {
     const push = this.reducedMotion ? 0 : this.tuning.push;
     for (const rp of this.ripples) {
-      if (rp.start <= this.scatteredUpTo) continue;
-      this.scatteredUpTo = rp.start;
+      if (rp.handled) continue;
+      rp.handled = true;
       this.swarm.scatter(rp.x, rp.y, push);
     }
     if (this.reducedMotion) {
@@ -808,6 +1021,10 @@ export class AsciiField {
     }
     if (this.shape === "firefly") {
       this.drawFireflies();
+      return;
+    }
+    if (this.shape === "zen") {
+      this.drawGarden();
       return;
     }
     const { ctx, cols, rows, cellW, cellH, spriteW, spriteH, dpr, atlas, offX, offY } = this;
