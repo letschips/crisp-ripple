@@ -16,7 +16,7 @@ import {
   normalizeSettings,
   soundEnabled,
 } from "./settings";
-import { DropSound } from "./sound";
+import { DropSound, type SoundKind } from "./sound";
 
 const PLUGIN_ID = "crisp-ripple";
 const HOST_CLASS = "crisp-ripple-host";
@@ -304,9 +304,10 @@ export default class CrispRipplePlugin extends Plugin {
     this.applyVisuals();
   }
 
-  /** The contour scene drops a stone; the character and dot scenes keep the water drop. */
-  private soundKind(): "drop" | "stone" {
-    return this.visuals().shape === "contour" ? "stone" : "drop";
+  /** The contour scene drops a stone, the firefly scene chimes; the character and dot scenes keep the water drop. */
+  private soundKind(): SoundKind {
+    const shape = this.visuals().shape;
+    return shape === "contour" ? "stone" : shape === "firefly" ? "chime" : "drop";
   }
 
   previewDrop(): void {
@@ -455,13 +456,14 @@ class RippleSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("形态")
-      .setDesc("背景由字符、圆点或等高线组成。")
+      .setDesc("背景由字符、圆点、等高线或萤火虫组成。")
       .setDisabled(!licensed)
       .addDropdown((dropdown) =>
         dropdown
           .addOption("glyph", "字符")
           .addOption("dot", "圆点")
           .addOption("contour", "等高线")
+          .addOption("firefly", "萤火虫")
           .setValue(licensed ? settings.shape : DEFAULT_VISUALS.shape)
           .setDisabled(!licensed)
           .onChange(async (value) => {

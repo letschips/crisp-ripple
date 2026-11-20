@@ -1,4 +1,5 @@
 import { traceContours } from "./contour";
+import { Swarm, fireflyCount } from "./firefly";
 
 // ASCII field renderer: a character (or dot) grid whose per-cell opacity is
 // driven by a slowly drifting noise field plus expanding click ripples.
@@ -40,7 +41,11 @@ const DIP_DEPTH = 0.14; // the pointer presses the terrain down this much at pus
 const DIP_SIGMA = 70; // px
 const DIP_EASE = 0.18; // s, how fast the dip follows the pointer and fades in and out
 
-export type FieldShape = "glyph" | "dot" | "contour";
+// Firefly scene.
+const GLOW_PX = 30; // CSS px across one firefly's glow sprite
+const FIREFLY_FRAME_MS = 33; // a swarm in motion needs ~30 fps even when idle
+
+export type FieldShape = "glyph" | "dot" | "contour" | "firefly";
 
 export interface Rgb {
   r: number;
@@ -157,6 +162,10 @@ export class AsciiField {
   private dipX = 0;
   private dipY = 0;
   private dipAmt = 0;
+  // Firefly scene: the swarm, its glow sprite, and the newest click already turned into a scatter.
+  private readonly swarm = new Swarm();
+  private readonly glow = document.createElement("canvas");
+  private scatteredUpTo = 0;
 
   constructor(
     private readonly canvas: HTMLCanvasElement,
@@ -214,6 +223,7 @@ export class AsciiField {
 
   setTuning(tuning: FieldTuning): void {
     this.tuning = { ...tuning };
+    if (this.shape === "firefly") this.fitSwarm();
     if (this.width > 0) this.draw(this.now());
   }
 
@@ -264,7 +274,11 @@ export class AsciiField {
     this.canvas.width = Math.max(1, Math.round(width * dpr));
     this.canvas.height = Math.max(1, Math.round(height * dpr));
     this.ctx.font = this.font;
-    if (this.shape === "contour") {
+    if (this.shape === "firefly") {
+      this.cellW = GLOW_PX;
+      this.cellH = GLOW_PX;
+      this.fitSwarm();
+    } else if (this.shape === "contour") {
       this.cellW = CONTOUR_STEP;
       this.cellH = CONTOUR_STEP;
     } else if (this.shape === "dot") {
@@ -330,7 +344,7 @@ export class AsciiField {
     if (this.windowDpr() !== this.dpr) this.resize(this.width, this.height);
     this.pruneRipples(now);
     const still = this.ripples.length === 0 && !this.moving;
-    if (still && now - this.lastDraw < IDLE_FRAME_MS) return;
+    if (still && now - this.lastDraw < (this.shape === "firefly" ? FIREFLY_FRAME_MS : IDLE_FRAME_MS)) return;
     // Hidden background, no ripple, nothing displaced: the canvas stays empty until a click or a setting changes.
     // Release the frame loop too, so the window can go idle; a click, a pointer push or a resize starts it again.
     if (still && this.blank && this.tuning.density <= 0 && !this.displaced) {
@@ -353,6 +367,10 @@ export class AsciiField {
     const dot = this.shape === "dot";
     this.buildDotTile(dot);
     if (this.shape === "contour") return; // lines are stroked directly, no sprites
+    if (this.shape === "firefly") {
+      this.buildGlow();
+      return;
+    }
     this.atlas.width = this.spriteW * (dot ? 1 : GLYPHS.length);
     this.atlas.height = this.spriteH * BUCKETS;
     const ctx = this.atlas.getContext("2d");
@@ -442,6 +460,10 @@ export class AsciiField {
     this.lastSim = now;
     if (this.shape === "contour") {
       this.easeDip(dt);
+      return;
+    }
+    if (this.shape === "firefly") {
+      this.stepSwarm(dt);
       return;
     }
     const push = this.tuning.push;
@@ -543,6 +565,62 @@ export class AsciiField {
     }
     this.displaced = displaced;
     this.moving = moving;
+  }
+
+  /** Firefly scene: as many fireflies as the area and density call for; existing ones stay put. */
+  private fitSwarm(): void {
+    this.swarm.resize(this.width, this.height, fireflyCount(this.width, this.height, this.tuning.density));
+  }
+
+  private buildGlow(): void {
+    const size = Math.ceil(GLOW_PX * this.dpr);
+    this.glow.width = size;
+    this.glow.height = size;
+    const g = this.glow.getContext("2d");
+    if (!g) return;
+    const { accent } = this.colors;
+    const c = `${accent.r},${accent.g},${accent.b}`;
+    const r = size / 2;
+    g.clearRect(0, 0, size, size);
+    const grad = g.createRadialGradient(r, r, 0, r, r, r);
+    grad.addColorStop(0, `rgba(${c},0.9)`);
+    grad.addColorStop(0.08, `rgba(${c},0.75)`);
+    grad.addColorStop(0.3, `rgba(${c},0.22)`);
+    grad.addColorStop(1, `rgba(${c},0)`);
+    g.fillStyle = grad;
+    g.fillRect(0, 0, size, size);
+  }
+
+  /** Firefly scene: new clicks scatter the swarm, then it flies on. */
+  private stepSwarm(dt: number): void {
+    const push = this.reducedMotion ? 0 : this.tuning.push;
+    for (const rp of this.ripples) {
+      if (rp.start <= this.scatteredUpTo) continue;
+      this.scatteredUpTo = rp.start;
+      this.swarm.scatter(rp.x, rp.y, push);
+    }
+    if (this.reducedMotion) {
+      this.moving = false;
+      return;
+    }
+    const busy = this.swarm.step(dt, this.pushActive ? this.pointer : null, { speed: this.tuning.speed, push });
+    this.moving = busy || (this.pointer !== null && this.pushActive);
+  }
+
+  private drawFireflies(): void {
+    const { ctx, dpr, swarm } = this;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+    this.blank = swarm.count === 0;
+    const size = this.glow.width;
+    const strength = this.tuning.strength;
+    for (let i = 0; i < swarm.count; i++) {
+      const b = swarm.brightness(i);
+      ctx.globalAlpha = Math.min(1, (0.08 + 0.92 * b) * strength);
+      const s = size * (0.6 + 0.6 * b);
+      ctx.drawImage(this.glow, swarm.x[i] * dpr - s / 2, swarm.y[i] * dpr - s / 2, s, s);
+    }
+    ctx.globalAlpha = 1;
   }
 
   /** Contour scene: the pointer dip follows the pointer with a short lag and fades in and out. */
@@ -726,6 +804,10 @@ export class AsciiField {
     this.simulate(now);
     if (this.shape === "contour") {
       this.drawContours(now);
+      return;
+    }
+    if (this.shape === "firefly") {
+      this.drawFireflies();
       return;
     }
     const { ctx, cols, rows, cellW, cellH, spriteW, spriteH, dpr, atlas, offX, offY } = this;

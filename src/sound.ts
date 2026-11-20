@@ -3,7 +3,8 @@
 // (that upward chirp is what makes it read as water), a smaller secondary
 // droplet just after, and a soft diffuse tail for the spreading ripple.
 // The contour scene uses a "stone" instead: a low thump whose pitch falls, with a
-// short muffled grit, like a pebble set down on soft ground.
+// short muffled grit, like a pebble set down on soft ground. The firefly scene uses a
+// "chime": two soft high partials that bloom and fade, like a sparkle of light.
 
 const MASTER_GAIN = 0.14;
 const TAIL_SECONDS = 1.4;
@@ -62,6 +63,20 @@ function grit(ctx: BaseAudioContext, out: AudioNode, at: number, level: number, 
   src.stop(at + seconds);
 }
 
+/** A soft bell partial: slow-ish attack so it blooms rather than clicks. */
+function bell(ctx: BaseAudioContext, out: AudioNode, at: number, freq: number, level: number, decay: number): void {
+  const osc = ctx.createOscillator();
+  const gain = ctx.createGain();
+  osc.type = "sine";
+  osc.frequency.setValueAtTime(freq, at);
+  gain.gain.setValueAtTime(0.0001, at);
+  gain.gain.exponentialRampToValueAtTime(level, at + 0.025);
+  gain.gain.exponentialRampToValueAtTime(0.0001, at + decay);
+  osc.connect(gain).connect(out);
+  osc.start(at);
+  osc.stop(at + decay + 0.02);
+}
+
 function buildTailImpulse(ctx: BaseAudioContext): AudioBuffer {
   const length = Math.floor(ctx.sampleRate * TAIL_SECONDS);
   const buffer = ctx.createBuffer(2, length, ctx.sampleRate);
@@ -78,6 +93,8 @@ function buildTailImpulse(ctx: BaseAudioContext): AudioBuffer {
   return buffer;
 }
 
+export type SoundKind = "drop" | "stone" | "chime";
+
 export interface DropOptions {
   /** -1 (left) … 1 (right) */
   pan: number;
@@ -86,7 +103,7 @@ export interface DropOptions {
   /** 0 … 1 multiplier on the default level */
   volume: number;
   /** water drop for the ripple scenes, stone for the contour scene */
-  kind?: "drop" | "stone";
+  kind?: SoundKind;
 }
 
 /** Schedules one drop on any context; shared by live playback and offline checks. */
@@ -106,7 +123,7 @@ export function scheduleDrop(
   const reverb = ctx.createConvolver();
   reverb.buffer = tail;
   const wet = ctx.createGain();
-  wet.gain.value = kind === "stone" ? 0.18 : 0.35;
+  wet.gain.value = kind === "stone" ? 0.18 : kind === "chime" ? 0.5 : 0.35;
 
   dry.connect(panner);
   dry.connect(reverb).connect(wet).connect(panner);
@@ -117,6 +134,13 @@ export function scheduleDrop(
     const base = 190 + seed * 50;
     thump(ctx, dry, at, base, 1.05, 0.2);
     grit(ctx, dry, at, 0.35, seed);
+    return master;
+  }
+  if (kind === "chime") {
+    // Two partials a fifth apart, the upper one entering a beat later, like two sparks.
+    const base = 1180 + seed * 260;
+    bell(ctx, dry, at, base, 0.42, 0.42);
+    bell(ctx, dry, at + 0.06, base * 1.5, 0.21, 0.34);
     return master;
   }
   const base = 420 + seed * 220;
