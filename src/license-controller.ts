@@ -3,6 +3,7 @@
 // after a newer action (or after unload) is dropped instead of overwriting it.
 // Access itself is recorded per owner in ./entitlement; `state` only describes it for the UI.
 
+import { normalizeLicenseCode } from "./license-code";
 import { applyEntitlement, claimEntitlement, rippleEntitled } from "./entitlement";
 
 export interface LicensePayloadLike {
@@ -112,7 +113,7 @@ export class LicenseController {
 
   async activate(code: string): Promise<ActivationOutcome> {
     const sequence = ++this.sequence;
-    const trimmed = code.trim();
+    const trimmed = normalizeLicenseCode(code);
     const result = await depsOf(this).verify(trimmed, true);
     if (this.stale(sequence)) return { result, applied: false, saved: false };
     if (!result.valid) return { result, applied: true, saved: false };

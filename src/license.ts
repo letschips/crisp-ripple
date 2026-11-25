@@ -1,4 +1,7 @@
 import { requestUrl } from "obsidian";
+import { normalizeLicenseCode } from "./license-code";
+
+export { normalizeLicenseCode };
 
 export interface LicensePayload {
   product: string;
@@ -194,7 +197,7 @@ export async function verifyLicenseCode(
   const getDeviceId = environment?.getDeviceId ?? defaultDeviceId;
   const isOnlineCheckAllowed = environment?.online !== false;
 
-  const trimmed = (licenseCode || "").trim();
+  const trimmed = normalizeLicenseCode(licenseCode);
   if (!trimmed) {
     return { valid: false, reason: "授权码为空" };
   }
@@ -350,7 +353,7 @@ export async function discoverVaultCrispLicenses(
 
   const add = (code: unknown) => {
     if (typeof code !== "string") return;
-    const trimmed = code.trim();
+    const trimmed = normalizeLicenseCode(code);
     if (!trimmed.includes(".") || seen.has(trimmed)) return;
     seen.add(trimmed);
     candidates.push(trimmed);

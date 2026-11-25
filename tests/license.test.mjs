@@ -38,7 +38,7 @@ await esbuild.build({
     },
   }],
 });
-const { verifyLicenseCode, discoverVaultCrispLicenses } = await import(pathToFileURL(path.join(outDir, "license.mjs")).href);
+const { verifyLicenseCode, discoverVaultCrispLicenses, normalizeLicenseCode } = await import(pathToFileURL(path.join(outDir, "license.mjs")).href);
 
 const b64url = (buf) => Buffer.from(buf).toString("base64url");
 function makeCode(fields = {}) {
@@ -168,6 +168,60 @@ test("inheritance scan returns every locally valid sibling code in order", async
   };
   const found = await discoverVaultCrispLicenses(app, "crisp-ripple");
   assert.deepEqual(found, [CODE, B], "duplicates, invalid codes and the plugin's own data are skipped");
+});
+
+// ---- 0.x paste normalisation: chat apps mangle codes on copy ----
+const sendBody = (calls) => JSON.parse(calls[0].body);
+
+test("line breaks, spaces, full-width spaces and zero-width characters inside a pasted code are removed", async () => {
+  const mid = Math.floor(CODE.length / 2);
+  for (const junk of ["\n", "\r\n", " ", "\u3000", "\u200b", "\u00a0", "\ufeff", " \n\u200b\u3000"]) {
+    const messy = ` ${CODE.slice(0, mid)}${junk}${CODE.slice(mid)}\n`;
+    const { request, calls } = respond(200, { valid: true });
+    const res = await verifyLicenseCode(messy, "crisp-ripple", env({ request }));
+    assert.equal(res.valid, true, JSON.stringify(junk));
+    assert.equal(sendBody(calls).licenseCode, CODE, "the service gets the clean code");
+  }
+});
+
+test("surrounding text such as a label or a trailing note is dropped", async () => {
+  for (const wrapped of [`卡密：${CODE}。`, `${CODE}\n复制卡密发送给买家`, `激活码: ${CODE}\n谢谢`]) {
+    const { request, calls } = respond(200, { valid: true });
+    const res = await verifyLicenseCode(wrapped, "crisp-ripple", env({ request }));
+    assert.equal(res.valid, true, wrapped);
+    assert.equal(sendBody(calls).licenseCode, CODE);
+  }
+});
+
+test("garbage and empty input stay invalid with the same reasons", async () => {
+  const { request, calls } = respond(200, { valid: true });
+  assert.deepEqual(await verifyLicenseCode("", "crisp-ripple", env({ request })), { valid: false, reason: "授权码为空" });
+  assert.deepEqual(await verifyLicenseCode(" \n\u3000", "crisp-ripple", env({ request })), { valid: false, reason: "授权码为空" });
+  assert.deepEqual(await verifyLicenseCode("not a license", "crisp-ripple", env({ request })), { valid: false, reason: "授权码格式无效（必须包含 payload 与签名）" });
+  assert.equal((await verifyLicenseCode("aaa.bbb", "crisp-ripple", env({ request }))).valid, false);
+  assert.equal(calls.length, 0);
+});
+
+test("a clean code is left exactly as it is", async () => {
+  assert.equal(normalizeLicenseCode(CODE), CODE);
+  assert.equal(normalizeLicenseCode(""), "");
+  assert.equal(normalizeLicenseCode(undefined), "");
+  const { request, calls } = respond(200, { valid: true });
+  assert.equal((await verifyLicenseCode(CODE, "crisp-ripple", env({ request }))).valid, true);
+  assert.equal(sendBody(calls).licenseCode, CODE);
+});
+
+test("inheritance scan offers the clean form of a mangled sibling code", async () => {
+  const files = { ".obsidian/plugins/crisp-mind/data.json": JSON.stringify({ licenseCode: `卡密：${CODE.slice(0, 30)}\n${CODE.slice(30)}。` }) };
+  const app = {
+    plugins: { plugins: {} },
+    vault: { configDir: ".obsidian", adapter: {
+      exists: async (p) => p === ".obsidian/plugins" || p in files,
+      list: async () => ({ folders: [".obsidian/plugins/crisp-mind"], files: [] }),
+      read: async (p) => files[p],
+    } },
+  };
+  assert.deepEqual(await discoverVaultCrispLicenses(app, "crisp-ripple"), [CODE]);
 });
 
 // ---- WebCrypto tampering (hardening) ----

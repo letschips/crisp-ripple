@@ -236,3 +236,12 @@ test("a second controller built for the same owner cannot open that owner's gate
   assert.equal(real.licensed, false);
   assert.equal(fake.licensed, false);
 });
+
+test("activating a pasted code with extra text saves and verifies the clean code", async () => {
+  const clean = `${"a".repeat(20)}.${"b".repeat(20)}`;
+  const h = host({ answers: { [clean]: { online: OK("P") } } });
+  const outcome = await h.controller.activate(`卡密：${clean.slice(0, 10)}\n ${clean.slice(10)}。`);
+  assert.equal(outcome.result.valid, true);
+  assert.equal(h.stored, clean);
+  assert.ok(h.calls.every((c) => c.code === clean));
+});
