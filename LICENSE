@@ -10,6 +10,8 @@ Copyright (c) 2026 letschips. All rights reserved.
 
 本仓库及包含的所有源代码、编译产物、界面设计、图标素材、文档及相关资产（以下统称“本软件”）版权均归作者（letschips）所有。本软件为专有商业软件（Proprietary Software），受中华人民共和国著作权法、国际版权条约及相关法律保护。
 
+**第三方组件例外**：`src/vendor/ascii-sharks` 目录下的代码及其在编译产物（`main.js`）中对应的部分，版权归原作者 drewdi 所有，按 MIT 许可证授权，不属于“本软件”，不受本协议约束。其许可全文见该目录下的 `LICENSE`，出处与改动说明见 `THIRD_PARTY_NOTICES.md`。
+
 本软件并非自由开源软件（FOSS），任何使用均须严格遵守以下条款：
 
 ### 1. 合法授权与使用许可
@@ -44,6 +46,8 @@ English Version (Provided for reference; Chinese version prevails)
 ----------------------------------------------------------------------
 
 All source code, compiled binaries, visual designs, icon assets, documentation, and associated materials contained herein (collectively, the "Software") are copyrighted by the author (letschips). The Software is proprietary commercial software protected under international copyright treaties and applicable laws.
+
+**Third-Party Exception**: The code in `src/vendor/ascii-sharks`, and the corresponding portions of the compiled `main.js`, are copyright drewdi and licensed under the MIT License. They are not part of the "Software" and are not governed by this License. See the `LICENSE` file in that directory for the full terms, and `THIRD_PARTY_NOTICES.md` for the source and changes.
 
 This Software is NOT free/open-source software (FOSS). Any access or use is strictly governed by the following terms:
 
