@@ -2,7 +2,15 @@
 // tested in Node.
 
 export type ColorMode = "blue" | "accent" | "custom";
-export type Shape = "glyph" | "dot" | "contour" | "firefly" | "zen";
+export type Shape = "glyph" | "dot" | "contour" | "firefly" | "zen" | "shark";
+
+const SHAPES: readonly Shape[] = ["glyph", "dot", "contour", "firefly", "zen", "shark"];
+/** Shapes anyone can pick without a licence; every other appearance setting stays licensed. */
+export const FREE_SHAPES: readonly Shape[] = ["glyph", "shark"];
+
+export function isFreeShape(shape: Shape): boolean {
+  return FREE_SHAPES.includes(shape);
+}
 
 export interface VisualSettings {
   colorMode: ColorMode;
@@ -78,14 +86,14 @@ export function normalizeSettings(raw: unknown): RippleSettings {
     speed: clampNumber(r.speed, RANGES.speed, DEFAULT_SETTINGS.speed),
     strength: clampNumber(r.strength, RANGES.strength, DEFAULT_SETTINGS.strength),
     density: clampNumber(r.density, RANGES.density, DEFAULT_SETTINGS.density),
-    shape: r.shape === "dot" || r.shape === "glyph" || r.shape === "contour" || r.shape === "firefly" || r.shape === "zen" ? r.shape : DEFAULT_SETTINGS.shape,
+    shape: r.shape === "koi" ? "shark" : SHAPES.includes(r.shape as Shape) ? (r.shape as Shape) : DEFAULT_SETTINGS.shape,
     push: clampNumber(r.push, RANGES.push, DEFAULT_SETTINGS.push),
   };
 }
 
-/** Appearance actually rendered: customisation is a licensed feature, so unlicensed users get defaults. */
+/** Appearance actually rendered: customisation is licensed, so unlicensed users get defaults plus a free shape. */
 export function effectiveVisuals(settings: VisualSettings, licensed: boolean): VisualSettings {
-  if (!licensed) return { ...DEFAULT_VISUALS };
+  if (!licensed) return { ...DEFAULT_VISUALS, shape: isFreeShape(settings.shape) ? settings.shape : DEFAULT_VISUALS.shape };
   return {
     colorMode: settings.colorMode,
     customColor: settings.customColor,

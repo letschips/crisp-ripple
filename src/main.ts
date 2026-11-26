@@ -13,6 +13,7 @@ import {
   RippleSettings,
   VisualSettings,
   effectiveVisuals,
+  isFreeShape,
   normalizeSettings,
   soundEnabled,
 } from "./settings";
@@ -28,7 +29,9 @@ const AUTHOR_URL = "https://xhslink.cn/m/3MwtKu4822b";
 // Pop-out windows can carry their own theme variables, so read the document the canvas lives in.
 function readTheme(visuals: VisualSettings, doc: Document): { colors: FieldColors; font: string } {
   const style = (doc.defaultView ?? window).getComputedStyle(doc.body);
-  const base = parseColor(style.getPropertyValue("--text-muted"), { r: 120, g: 120, b: 120 });
+  const shark = visuals.shape === "shark";
+  const base = parseColor(style.getPropertyValue(shark ? "--text-normal" : "--text-muted"), { r: 120, g: 120, b: 120 });
+  const paper = shark ? parseColor(style.getPropertyValue("--background-primary"), { r: 250, g: 250, b: 250 }) : undefined;
   const fallback = { r: 80, g: 110, b: 230 };
   const accent =
     visuals.colorMode === "custom"
@@ -38,7 +41,7 @@ function readTheme(visuals: VisualSettings, doc: Document): { colors: FieldColor
           fallback,
         );
   const family = style.getPropertyValue("--font-monospace").trim() || "monospace";
-  return { colors: { base, accent }, font: `12px ${family}` };
+  return { colors: { base, accent, paper }, font: `12px ${family}` };
 }
 
 function tuningOf(visuals: VisualSettings): FieldTuning {
@@ -304,7 +307,7 @@ export default class CrispRipplePlugin extends Plugin {
     this.applyVisuals();
   }
 
-  /** The contour and sand garden scenes drop a stone, the firefly scene chimes; the character and dot scenes keep the water drop. */
+  /** The contour and sand garden scenes drop a stone, the firefly scene chimes; the others keep the water drop. */
   private soundKind(): SoundKind {
     const shape = this.visuals().shape;
     return shape === "contour" || shape === "zen" ? "stone" : shape === "firefly" ? "chime" : "drop";
@@ -446,7 +449,7 @@ class RippleSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl).setName("波纹外观").setHeading();
-    if (!licensed) this.lockedNote(containerEl, "未激活时使用默认外观；调节形态、颜色、速度、浓淡和推开力度需要激活。");
+    if (!licensed) this.lockedNote(containerEl, "字符和 ASCII 鲨鱼可直接使用。其余形态和外观调节需要激活。");
 
     // Preview at once; the save reads data.json back and can lag behind a dragged slider.
     const save = async (): Promise<void> => {
@@ -456,22 +459,28 @@ class RippleSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("形态")
-      .setDesc("背景由字符、圆点、等高线、萤火虫或砂石庭院组成。")
-      .setDisabled(!licensed)
-      .addDropdown((dropdown) =>
-        dropdown
-          .addOption("glyph", "字符")
-          .addOption("dot", "圆点")
-          .addOption("contour", "等高线")
-          .addOption("firefly", "萤火虫")
-          .addOption("zen", "砂石庭院")
-          .setValue(licensed ? settings.shape : DEFAULT_VISUALS.shape)
-          .setDisabled(!licensed)
-          .onChange(async (value) => {
-            settings.shape = value as Shape;
-            await save();
-          }),
-      );
+      .setDesc("空标签页的背景效果。")
+      .addDropdown((dropdown) => {
+        const options: [Shape, string][] = licensed
+          ? [
+              ["glyph", "字符"],
+              ["dot", "圆点"],
+              ["contour", "等高线"],
+              ["firefly", "萤火虫"],
+              ["zen", "砂石庭院"],
+              ["shark", "ASCII 鲨鱼"],
+            ]
+          : [
+              ["glyph", "字符"],
+              ["shark", "ASCII 鲨鱼"],
+            ];
+        for (const [value, label] of options) dropdown.addOption(value, label);
+        const shown = licensed || isFreeShape(settings.shape) ? settings.shape : DEFAULT_VISUALS.shape;
+        dropdown.setValue(shown).onChange(async (value) => {
+          settings.shape = value as Shape;
+          await save();
+        });
+      });
 
     new Setting(containerEl)
       .setName("波纹颜色")

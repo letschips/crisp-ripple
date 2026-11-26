@@ -1,5 +1,6 @@
 import { traceContours } from "./contour";
 import { Swarm, fireflyCount } from "./firefly";
+import { SharkScene } from "./shark-scene";
 import { ERASE_CELL, Garden, rakeGap } from "./zen";
 
 // ASCII field renderer: a character (or dot) grid whose per-cell opacity is
@@ -45,13 +46,14 @@ const DIP_EASE = 0.18; // s, how fast the dip follows the pointer and fades in a
 // Firefly scene.
 const GLOW_PX = 30; // CSS px across one firefly's glow sprite
 const FIREFLY_FRAME_MS = 33; // a swarm in motion needs ~30 fps even when idle
+const SHARK_FRAME_MS = 1000 / 60 - 1; // shark scene cap while the pointer or a ripple is active
 
 // Sand garden scene.
 const RING_STEP = 6; // CSS px between ring-field samples
 const GARDEN_IDLE_MS = 250; // furrows fill in over minutes; 4 fps is plenty
 const GRAIN_TILE = 96; // CSS px
 
-export type FieldShape = "glyph" | "dot" | "contour" | "firefly" | "zen";
+export type FieldShape = "glyph" | "dot" | "contour" | "firefly" | "zen" | "shark";
 
 export interface Rgb {
   r: number;
@@ -62,6 +64,7 @@ export interface Rgb {
 export interface FieldColors {
   base: Rgb;
   accent: Rgb;
+  paper?: Rgb;
 }
 
 /** User-adjustable multipliers; 1 = the tuned defaults. */
@@ -80,7 +83,7 @@ interface Ripple {
   x: number;
   y: number;
   start: number;
-  /** the firefly and sand garden scenes act on each click once */
+  /** the firefly, sand garden and shark scenes act on each click once */
   handled?: boolean;
 }
 
@@ -173,6 +176,7 @@ export class AsciiField {
   // Firefly scene: the swarm and its glow sprite.
   private readonly swarm = new Swarm();
   private readonly glow = document.createElement("canvas");
+  private sharkScene: SharkScene | undefined;
   // Sand garden scene: the garden, its raked lines cached until stones or size change, and the sand grain.
   private readonly garden = new Garden();
   private readonly lines = document.createElement("canvas");
@@ -198,6 +202,7 @@ export class AsciiField {
   setReducedMotion(reduced: boolean): void {
     if (reduced === this.reducedMotion) return;
     this.reducedMotion = reduced;
+    this.sharkScene?.setReducedMotion(reduced);
     if (reduced) {
       this.ripples = [];
       this.resetSprings();
@@ -238,12 +243,15 @@ export class AsciiField {
   setTuning(tuning: FieldTuning): void {
     this.tuning = { ...tuning };
     if (this.shape === "firefly") this.fitSwarm();
+    if (this.shape === "shark") this.fitSharkScene();
     if (this.shape === "zen") this.garden.dirty = true;
     if (this.width > 0) this.draw(this.now());
   }
 
   setShape(shape: FieldShape): void {
     if (shape === this.shape) return;
+    if (this.shape === "shark") this.sharkScene = undefined;
+    if (shape === "shark") this.resetSprings();
     this.shape = shape;
     this.cols = 0; // force a fresh grid
     this.resize(this.width, this.height, true);
@@ -269,11 +277,12 @@ export class AsciiField {
   }
 
   setColors(colors: FieldColors, font: string): void {
-    const same = (a: Rgb, b: Rgb): boolean => a.r === b.r && a.g === b.g && a.b === b.b;
+    const same = (a?: Rgb, b?: Rgb): boolean => a === b || !!(a && b && a.r === b.r && a.g === b.g && a.b === b.b);
     // Tuning-only refreshes keep the glyph atlas; rebuilding it on every slider step is wasted work.
-    if (font === this.font && same(colors.base, this.colors.base) && same(colors.accent, this.colors.accent)) return;
+    if (font === this.font && same(colors.base, this.colors.base) && same(colors.accent, this.colors.accent) && same(colors.paper, this.colors.paper)) return;
     this.colors = colors;
     this.font = font;
+    this.sharkScene?.setColors(colors, font);
     this.resize(this.width, this.height, true);
   }
 
@@ -288,6 +297,11 @@ export class AsciiField {
     }
     this.canvas.width = Math.max(1, Math.round(width * dpr));
     this.canvas.height = Math.max(1, Math.round(height * dpr));
+    if (this.shape === "shark") {
+      this.fitSharkScene();
+      this.draw(this.now());
+      return;
+    }
     this.ctx.font = this.font;
     if (this.shape === "zen") {
       this.cellW = ERASE_CELL;
@@ -371,7 +385,9 @@ export class AsciiField {
       }
       if (now - this.lastDraw < GARDEN_IDLE_MS) return;
     }
-    if (still && now - this.lastDraw < (this.shape === "firefly" ? FIREFLY_FRAME_MS : IDLE_FRAME_MS)) return;
+    if (still && now - this.lastDraw < (this.shape === "firefly" || this.shape === "shark" ? FIREFLY_FRAME_MS : IDLE_FRAME_MS)) return;
+    // The shark scene costs ~5 ms a frame; following a 120+ Hz display while the pointer rests on it would keep a core busy.
+    if (this.shape === "shark" && now - this.lastDraw < SHARK_FRAME_MS) return;
     // Hidden background, no ripple, nothing displaced: the canvas stays empty until a click or a setting changes.
     // Release the frame loop too, so the window can go idle; a click, a pointer push or a resize starts it again.
     if (still && this.blank && this.tuning.density <= 0 && !this.displaced) {
@@ -500,6 +516,10 @@ export class AsciiField {
     }
     if (this.shape === "zen") {
       this.stepGarden(dt);
+      return;
+    }
+    if (this.shape === "shark") {
+      this.stepSharkScene(dt);
       return;
     }
     const push = this.tuning.push;
@@ -836,6 +856,49 @@ export class AsciiField {
     ctx.globalAlpha = 1;
   }
 
+  private drawPondRipple(now: number): void {
+    if (this.ripples.length === 0) return;
+    const { ctx, dpr } = this;
+    const { accent } = this.colors;
+    const { speed } = this.tuning;
+    const reach = 220 + 0.16 * Math.max(this.width, this.height);
+    const strength = Math.min(1, this.tuning.strength);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    for (const rp of this.ripples) {
+      const age = ((now - rp.start) / 1000) * speed;
+      const radius = reach * (1 - Math.exp(-age / RIPPLE_TAU));
+      const fade = Math.pow(Math.max(0, 1 - age / RIPPLE_LIFE), 1.6);
+      if (fade <= 0.01) continue;
+      for (const [k, w] of [[1, 1.2], [0.86, 0.8]] as const) {
+        ctx.strokeStyle = `rgba(${accent.r},${accent.g},${accent.b},${(0.45 * fade * strength * (k === 1 ? 1 : 0.45)).toFixed(3)})`;
+        ctx.lineWidth = w;
+        ctx.beginPath();
+        ctx.arc(rp.x, rp.y, radius * k, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+    }
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+  }
+
+  private fitSharkScene(): void {
+    if (!this.sharkScene) {
+      this.sharkScene = new SharkScene(this.canvas);
+      this.sharkScene.setColors(this.colors, this.font);
+    }
+    this.sharkScene.resize(this.width, this.height, this.dpr, this.tuning.density, this.reducedMotion);
+  }
+
+  private stepSharkScene(dt: number): void {
+    if (!this.sharkScene || this.reducedMotion) return;
+    for (const ripple of this.ripples) {
+      if (ripple.handled) continue;
+      ripple.handled = true;
+      if (this.pushActive) this.sharkScene.splash(ripple.x, ripple.y);
+    }
+    this.sharkScene.step(dt, this.tuning.speed, this.pushActive ? this.pointer : null);
+    this.moving = this.pushActive && this.pointer !== null;
+  }
+
   /** Contour scene: the pointer dip follows the pointer with a short lag and fades in and out. */
   private easeDip(dt: number): void {
     const target = this.pointer && this.pushActive ? 1 : 0;
@@ -1025,6 +1088,13 @@ export class AsciiField {
     }
     if (this.shape === "zen") {
       this.drawGarden();
+      return;
+    }
+    if (this.shape === "shark") {
+      this.ctx.setTransform(1, 0, 0, 1, 0, 0);
+      this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+      this.blank = !this.sharkScene?.draw(this.ctx, this.tuning.strength) && this.ripples.length === 0;
+      this.drawPondRipple(now);
       return;
     }
     const { ctx, cols, rows, cellW, cellH, spriteW, spriteH, dpr, atlas, offX, offY } = this;

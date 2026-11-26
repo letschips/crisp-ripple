@@ -17,7 +17,7 @@ await esbuild.build({
   outfile: path.join(outDir, "settings.mjs"),
   logLevel: "error",
 });
-const { normalizeSettings, effectiveVisuals, soundEnabled, DEFAULT_VISUALS, DEFAULT_SETTINGS } = await import(
+const { normalizeSettings, effectiveVisuals, soundEnabled, isFreeShape, DEFAULT_VISUALS, DEFAULT_SETTINGS } = await import(
   pathToFileURL(path.join(outDir, "settings.mjs")).href
 );
 
@@ -82,6 +82,18 @@ test("shape and push are licensed appearance settings with safe fallbacks", () =
   const bad = normalizeSettings({ shape: "star", push: 500 });
   assert.equal(bad.shape, "glyph");
   assert.equal(bad.push, 200);
+});
+
+test("ASCII sharks are free and the previous preview setting migrates", () => {
+  assert.equal(normalizeSettings({ shape: "koi" }).shape, "shark");
+  const shark = normalizeSettings({ shape: "shark", colorMode: "custom", speed: 60, density: 40, push: 0 });
+  assert.deepEqual(effectiveVisuals(shark, false), { ...DEFAULT_VISUALS, shape: "shark" }, "only the shape is free");
+  assert.equal(effectiveVisuals(shark, true).shape, "shark");
+  for (const shape of ["dot", "contour", "firefly", "zen"]) {
+    assert.equal(effectiveVisuals(normalizeSettings({ shape }), false).shape, "glyph", shape);
+  }
+  assert.ok(isFreeShape("glyph") && isFreeShape("shark"));
+  assert.ok(!isFreeShape("zen"));
 });
 
 test("the background switch is on by default and stays off once saved, licence or not", () => {
