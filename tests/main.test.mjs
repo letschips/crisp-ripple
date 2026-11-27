@@ -181,3 +181,40 @@ test("turning the background off removes every canvas, and turning it on brings 
   plugin.sync();
   assert.equal(plugin.ripples.size, 1);
 });
+
+// 0.6.2 audit: the licence box and background redraws.
+test("an empty licence box asks for a code instead of resending the saved one", async () => {
+  const { plugin } = await setup();
+  plugin.options.licenseCode = "old.revoked";
+  let sent = null;
+  plugin.activate = async (code) => { sent = code; return { result: { valid: false }, applied: true, saved: true }; };
+  notices.length = 0;
+  buttons.length = 0;
+  plugin.settingTab.display();
+  await buttons.find((b) => b.text === "激活").click();
+  assert.equal(sent, null);
+  assert.ok(notices.includes("请先输入授权码"), `got: ${notices.join(" | ")}`);
+});
+
+test("a background change leaves a closed settings tab alone and waits for the user to leave a focused field", async () => {
+  const { plugin } = await setup();
+  const tab = plugin.settingTab;
+  let builds = 0;
+  const display = tab.display.bind(tab);
+  tab.display = () => { builds++; display(); };
+  tab.containerEl.isConnected = false;
+  tab.refreshIfOpen();
+  assert.equal(builds, 0, "a closed tab is rebuilt when it opens");
+
+  let onBlur = null;
+  const input = { matches: () => true, addEventListener: (type, fn) => { if (type === "focusout") onBlur = fn; } };
+  tab.containerEl.isConnected = true;
+  tab.containerEl.contains = (el) => el === input;
+  tab.containerEl.ownerDocument = { activeElement: input };
+  tab.refreshIfOpen();
+  tab.refreshIfOpen();
+  assert.equal(builds, 0, "rebuilding now would throw away the focused input");
+  tab.containerEl.ownerDocument = { activeElement: null };
+  onBlur();
+  assert.equal(builds, 1);
+});

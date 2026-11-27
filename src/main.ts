@@ -195,7 +195,7 @@ export default class CrispRipplePlugin extends Plugin {
     },
     onChange: () => {
       this.applyVisuals();
-      this.settingTab?.display();
+      this.settingTab?.refreshIfOpen();
     },
   }, this);
 
@@ -239,7 +239,7 @@ export default class CrispRipplePlugin extends Plugin {
         this.rippleSettings.sound = !this.rippleSettings.sound;
         await this.saveSettings();
         new Notice(`Crisp Ripple sound ${this.rippleSettings.sound ? "on" : "off"}`);
-        this.settingTab?.display();
+        this.settingTab?.refreshIfOpen();
       },
     });
     this.app.workspace.onLayoutReady(() => {
@@ -384,8 +384,32 @@ class RippleSettingTab extends PluginSettingTab {
   private licenseDraft = "";
   private checking = false;
 
+  private redrawOnBlur = false;
+
   constructor(app: App, private readonly plugin: CrispRipplePlugin) {
     super(app, plugin);
+  }
+
+  /**
+   * For changes that arrive on their own (a background licence check, the expiry timer, a command).
+   * A closed tab is rebuilt when it opens; an open one waits until the user leaves the field they are typing in,
+   * since rebuilding would throw away the focused input.
+   */
+  refreshIfOpen(): void {
+    const { containerEl } = this;
+    if (!containerEl.isConnected) return;
+    // Not `instanceof HTMLElement`: a pop-out window's settings live in another realm.
+    const active = containerEl.ownerDocument?.activeElement;
+    if (active && typeof active.matches === "function" && containerEl.contains(active) && active.matches("input, textarea")) {
+      if (this.redrawOnBlur) return;
+      this.redrawOnBlur = true;
+      active.addEventListener("focusout", () => {
+        this.redrawOnBlur = false;
+        this.refreshIfOpen();
+      }, { once: true });
+      return;
+    }
+    this.display();
   }
 
   display(): void {
@@ -579,7 +603,8 @@ class RippleSettingTab extends PluginSettingTab {
           .setCta()
           .setDisabled(this.checking)
           .onClick(async () => {
-            const code = this.licenseDraft || this.plugin.options.licenseCode;
+            // Only what the box shows: a stale saved code would otherwise be resent behind an empty field.
+            const code = this.licenseDraft;
             if (!code) {
               new Notice("请先输入授权码");
               return;

@@ -367,6 +367,8 @@ export async function discoverVaultCrispLicenses(
     if (p?.settings?.licenseKey) add(p.settings.licenseKey);
     if (p?.data?.licenseCode) add(p.data.licenseCode);
     if (p?.data?.licenseKey) add(p.data.licenseKey);
+    if (p?.options?.licenseCode) add(p.options.licenseCode);
+    if (p?.licenseKey) add(p.licenseKey);
   }
 
   // 2. 磁盘上其他 crisp-* 插件目录下的 data.json
@@ -388,6 +390,8 @@ export async function discoverVaultCrispLicenses(
               const text = await adapter.read(dataPath);
               const data = JSON.parse(text);
               add(data?.licenseCode || data?.licenseKey || data?.license);
+              // Crisp Pulse keeps its settings nested under `settings`.
+              add(data?.settings?.licenseCode || data?.settings?.licenseKey);
             } catch {
               // 忽略损坏的单文件
             }
