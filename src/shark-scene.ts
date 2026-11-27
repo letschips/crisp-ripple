@@ -53,6 +53,8 @@ export class SharkScene {
     this.drawElapsed = 0;
     if (reducedMotion) {
       for (let frame = 0; frame < 240; frame++) this.world.step(STEP);
+      // Kills during the warm-up would all land on the one frozen frame as a burst of colour.
+      this.world.events.length = 0;
     }
   }
 
@@ -88,6 +90,10 @@ export class SharkScene {
       this.world.step(STEP);
       this.stepRemainder -= STEP;
     }
+  }
+
+  get hasWorld(): boolean {
+    return this.world !== undefined;
   }
 
   splash(x: number, y: number): void {

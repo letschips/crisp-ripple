@@ -31,7 +31,9 @@ function readTheme(visuals: VisualSettings, doc: Document): { colors: FieldColor
   const style = (doc.defaultView ?? window).getComputedStyle(doc.body);
   const shark = visuals.shape === "shark";
   const base = parseColor(style.getPropertyValue(shark ? "--text-normal" : "--text-muted"), { r: 120, g: 120, b: 120 });
-  const paper = shark ? parseColor(style.getPropertyValue("--background-primary"), { r: 250, g: 250, b: 250 }) : undefined;
+  // A transparent theme leaves no paper colour to read; fall back to the theme's own side, or dark windows get light-theme fish.
+  const paperFallback = doc.body.classList?.contains("theme-dark") ? { r: 24, g: 24, b: 28 } : { r: 250, g: 250, b: 250 };
+  const paper = shark ? parseColor(style.getPropertyValue("--background-primary"), paperFallback) : undefined;
   const fallback = { r: 80, g: 110, b: 230 };
   const accent =
     visuals.colorMode === "custom"

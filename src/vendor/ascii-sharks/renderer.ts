@@ -473,6 +473,7 @@ export class AsciiRenderer {
   private arcTotal = 1;
   private shape = SHAPES.classic;
   private sharkId = 0;
+  private wakeTime = Number.NaN;
   private finTipLeft = 0;
   private finTipRight = 0;
   // Scratch outputs of sampleShark(), to avoid allocating per sample.
@@ -624,7 +625,12 @@ export class AsciiRenderer {
     } else {
       this.rasterizeSharks(world.sharks, t);
     }
-    this.depositWake(world);
+    // Crisp Ripple: a redraw with no time passed (a setting changed, or reduced motion) adds no wake;
+    // the deposit is per step, and without diffusion it would pile up on every redraw.
+    if (world.time !== this.wakeTime) {
+      this.wakeTime = world.time;
+      this.depositWake(world);
+    }
     this.diffuse(dt);
     // Sharks only clear Life cells once they have mostly faded in.
     this.life?.step(dt, this.sharkOpacity > 0.5 ? this.sharkFlag : null, this.energy);

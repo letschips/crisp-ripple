@@ -252,6 +252,10 @@ export class AsciiField {
     if (shape === this.shape) return;
     if (this.shape === "shark") this.sharkScene = undefined;
     if (shape === "shark") this.resetSprings();
+    // Clicks and the pointer dip belong to the old scene: a fresh glyph ripple must not land as a stone, or the reverse.
+    this.ripples = [];
+    this.dipAmt = 0;
+    this.moving = false;
     this.shape = shape;
     this.cols = 0; // force a fresh grid
     this.resize(this.width, this.height, true);
@@ -345,6 +349,8 @@ export class AsciiField {
 
   addRipple(x: number, y: number): void {
     if (this.reducedMotion) return;
+    // These scenes draw nothing at all with the background hidden, so a click has nothing to animate.
+    if (this.tuning.density <= 0 && (this.shape === "contour" || this.shape === "firefly" || this.shape === "zen")) return;
     this.ripples.push({ x, y, start: this.now() });
     if (this.ripples.length > MAX_RIPPLES) this.ripples.shift();
     this.start();
@@ -652,7 +658,8 @@ export class AsciiField {
     for (const rp of this.ripples) {
       if (rp.handled) continue;
       rp.handled = true;
-      this.garden.click(rp.x, rp.y);
+      // A click on a hidden garden would set a stone nobody sees until the background comes back.
+      if (this.tuning.density > 0) this.garden.click(rp.x, rp.y);
     }
     const busy = this.garden.step(dt, this.pushActive ? this.pointer : null, this.tuning.push, this.tuning.speed);
     this.moving = busy;
@@ -837,7 +844,8 @@ export class AsciiField {
       return;
     }
     const busy = this.swarm.step(dt, this.pushActive ? this.pointer : null, { speed: this.tuning.speed, push });
-    this.moving = busy || (this.pointer !== null && this.pushActive);
+    // A resting pointer is not motion by itself: the swarm reports busy while it is actually pushing fireflies.
+    this.moving = busy;
   }
 
   private drawFireflies(): void {
@@ -896,11 +904,19 @@ export class AsciiField {
       if (this.pushActive) this.sharkScene.splash(ripple.x, ripple.y);
     }
     this.sharkScene.step(dt, this.tuning.speed, this.pushActive ? this.pointer : null);
-    this.moving = this.pushActive && this.pointer !== null;
+    // Background hidden: no fish to push, so a resting pointer must not keep the frame loop alive.
+    this.moving = this.pushActive && this.pointer !== null && this.sharkScene.hasWorld;
   }
 
   /** Contour scene: the pointer dip follows the pointer with a short lag and fades in and out. */
   private easeDip(dt: number): void {
+    if (this.tuning.density <= 0) {
+      // No lines to bend while the background is hidden.
+      this.dipAmt = 0;
+      this.moving = false;
+      this.displaced = false;
+      return;
+    }
     const target = this.pointer && this.pushActive ? 1 : 0;
     if (dt === 0) {
       this.moving = target !== this.dipAmt;

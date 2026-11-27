@@ -223,8 +223,13 @@ export class World {
       const sp = SPECIES[species];
       const size = Math.min(randInt(sp.schoolSize[0], sp.schoolSize[1]), total - this.fish.length);
       const millDir: 1 | -1 = Math.random() < 0.5 ? 1 : -1;
-      const cx = rand(W * 0.06, W * 0.94);
-      const cy = rand(H * 0.08, H * 0.92);
+      let cx = rand(W * 0.06, W * 0.94);
+      let cy = rand(H * 0.08, H * 0.92);
+      // Crisp Ripple: no school starts on top of the buttons.
+      for (let tries = 0; tries < 8 && this.inCentreZone(cx, cy); tries++) {
+        cx = rand(W * 0.06, W * 0.94);
+        cy = rand(H * 0.08, H * 0.92);
+      }
       // Mostly level headings: fish cruise sideways far more than up or down.
       const dir = (Math.random() < 0.5 ? 0 : Math.PI) + rand(-0.5, 0.5);
       for (let k = 0; k < size; k++) {
@@ -458,15 +463,21 @@ export class World {
       f.alarm = alarm;
 
       // Crisp Ripple: keep the middle clear for the empty tab's buttons, like the sharks' no-swim zone.
+      // The zone has a pixel floor and sits a little low: the buttons hang below the title.
+      let zoneNx = 0;
+      let zoneNy = 0;
       if (this.clearCentre) {
-        const ex = (f.x - W / 2) / (W * 0.16);
-        const ey = (f.y - H / 2) / (H * 0.16);
+        const z = this.centreZone();
+        const ex = (f.x - z.cx) / z.rx;
+        const ey = (f.y - z.cy) / z.ry;
         const e2 = ex * ex + ey * ey;
         if (e2 < 1) {
           const e = Math.sqrt(e2) || 1e-3;
-          const w = 1 - e;
-          ax += (ex / e) * FISH_FLEE_K * w;
-          ay += (ey / e) * FISH_FLEE_K * w;
+          const w = 1.5 * (1 - e) + 0.5;
+          zoneNx = ex / e;
+          zoneNy = ey / e;
+          ax += zoneNx * FISH_FLEE_K * w;
+          ay += zoneNy * FISH_FLEE_K * w;
         }
       }
 
@@ -492,6 +503,15 @@ export class World {
       const before = Math.atan2(f.vy, f.vx);
       f.vx += ax * dt;
       f.vy += ay * dt;
+      // Inside the zone, drop the inward part of the velocity: schools slide round the buttons
+      // instead of being pushed through them by their school-mates or a shark.
+      if (zoneNx !== 0 || zoneNy !== 0) {
+        const inward = f.vx * zoneNx + f.vy * zoneNy;
+        if (inward < 0) {
+          f.vx -= inward * zoneNx;
+          f.vy -= inward * zoneNy;
+        }
+      }
       const maxSpeed = sp.maxSpeed * (1 + 1.8 * f.alarm);
       const s = Math.hypot(f.vx, f.vy);
       if (s > maxSpeed) {
@@ -506,6 +526,25 @@ export class World {
       f.x = clamp(f.x + f.vx * dt, -60, W + 60);
       f.y = clamp(f.y + f.vy * dt, -60, H + 60);
     }
+  }
+
+  /** Crisp Ripple: the fish no-swim ellipse over the empty tab's title and buttons. */
+  private centreZone() {
+    const { width: W, height: H } = this;
+    return {
+      cx: W / 2,
+      cy: H / 2 + Math.min(20, H * 0.03),
+      rx: Math.min(W * 0.45, Math.max(W * 0.16, 160)),
+      ry: Math.min(H * 0.4, Math.max(H * 0.16, 125)),
+    };
+  }
+
+  private inCentreZone(x: number, y: number) {
+    if (!this.clearCentre) return false;
+    const z = this.centreZone();
+    const ex = (x - z.cx) / z.rx;
+    const ey = (y - z.cy) / z.ry;
+    return ex * ex + ey * ey < 1;
   }
 
   private stepSharks(dt: number) {
@@ -741,7 +780,9 @@ export class World {
     const along = rand(0.15, 0.85);
     const x = side === 0 ? -20 : side === 1 ? W + 20 : along * W;
     const y = side === 2 ? -20 : side === 3 ? H + 20 : along * H;
-    const inward = Math.atan2(H / 2 - y, W / 2 - x) + rand(-0.5, 0.5);
+    // Crisp Ripple: aim at the lane above or below the middle, not straight through the buttons.
+    const aimY = this.clearCentre ? H * (Math.random() < 0.5 ? 0.22 : 0.78) : H / 2;
+    const inward = Math.atan2(aimY - y, W / 2 - x) + rand(-0.5, 0.5);
     const species = pickSpecies();
     const sp = SPECIES[species];
     const millDir: 1 | -1 = Math.random() < 0.5 ? 1 : -1;

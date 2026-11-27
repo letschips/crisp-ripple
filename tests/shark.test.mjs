@@ -89,21 +89,26 @@ test("density zero releases the frame loop and narrow panes fit the scene", () =
   field.destroy();
 });
 
-test("fish keep out of the middle, where the empty tab's buttons sit", () => {
-  const { host, field, scene } = setup({ width: 1280, height: 800 });
-  const world = scene.world;
-  const inside = () => world.fish.filter(f => f.alive && Math.abs(f.x - 640) < 130 && Math.abs(f.y - 400) < 80).length;
-  // Start a school right on top of the buttons and let it swim.
-  for (const f of world.fish.slice(0, 30)) { f.x = 640 + (Math.random() - 0.5) * 200; f.y = 400 + (Math.random() - 0.5) * 120; }
-  advance(host, 60 * 3);
-  let total = 0;
-  for (let k = 0; k < 20; k++) {
-    advance(host, 15);
-    total += inside();
-  }
-  assert.ok(total / 20 < 1, `average ${(total / 20).toFixed(2)} fish over the buttons`);
-  field.destroy();
-});
+// The four buttons hang below the empty-state title: measured at x ±73 px and y −62…+102 px from the middle.
+for (const [width, height] of [[1280, 800], [1280, 600]]) {
+  test(`fish keep off the empty tab's buttons (${width}×${height})`, () => {
+    const { host, field, scene } = setup({ width, height });
+    const world = scene.world;
+    const cx = width / 2;
+    const cy = height / 2;
+    const inside = () => world.fish.filter(f => f.alive && Math.abs(f.x - cx) < 80 && f.y - cy > -65 && f.y - cy < 105).length;
+    // Start a school right on top of the buttons and let it swim.
+    for (const f of world.fish.slice(0, 30)) { f.x = cx + (Math.random() - 0.5) * 160; f.y = cy + 20 + (Math.random() - 0.5) * 160; }
+    advance(host, 60 * 3);
+    let total = 0;
+    for (let k = 0; k < 40; k++) {
+      advance(host, 15);
+      total += inside();
+    }
+    assert.ok(total / 40 < 0.5, `average ${(total / 40).toFixed(2)} fish over the buttons`);
+    field.destroy();
+  });
+}
 
 test("a resting pointer does not push the scene past 60 fps on a fast display", () => {
   const { host, field, scene } = setup();
